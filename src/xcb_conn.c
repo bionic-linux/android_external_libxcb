@@ -37,6 +37,7 @@
 #include <fcntl.h>
 #include <errno.h>
 #include <limits.h>
+#include <sys/time.h> /* I bet this does not work on Windows... */
 
 #include "xcb.h"
 #include "xcbint.h"
@@ -435,6 +436,11 @@ xcb_connection_t *_xcb_conn_ret_error(int err)
 
 int _xcb_conn_wait(xcb_connection_t *c, pthread_cond_t *cond, struct iovec **vector, int *count)
 {
+    return _xcb_conn_timedwait(c, cond, vector, count, NULL, NULL);
+}
+
+int _xcb_conn_timedwait(xcb_connection_t *c, pthread_cond_t *cond, struct iovec **vector, int *count, struct timeval *now, struct timeval *deadline)
+{
     int ret;
 #if USE_POLL
     struct pollfd fd;
@@ -445,7 +451,13 @@ int _xcb_conn_wait(xcb_connection_t *c, pthread_cond_t *cond, struct iovec **vec
     /* If the thing I should be doing is already being done, wait for it. */
     if(count ? c->out.writing : c->in.reading)
     {
-        pthread_cond_wait(cond, &c->iolock);
+        if(deadline) {
+            struct timespec spec;
+            spec.tv_sec = deadline->tv_sec;
+            spec.tv_nsec = deadline->tv_usec * 100;
+            pthread_cond_timedwait(cond, &c->iolock, &spec);
+        } else
+            pthread_cond_wait(cond, &c->iolock);
         return 1;
     }
 
@@ -477,7 +489,13 @@ int _xcb_conn_wait(xcb_connection_t *c, pthread_cond_t *cond, struct iovec **vec
     pthread_mutex_unlock(&c->iolock);
     do {
 #if USE_POLL
-        ret = poll(&fd, 1, -1);
+        int timeout = -1;
+        if(deadline && now) {
+            struct timeval diff;
+            timersub(deadline, now, &diff);
+            timeout = now->tv_sec * 1000 + now->tv_usec / 1000;
+        }
+        ret = poll(&fd, 1, timeout);
         /* If poll() returns an event we didn't expect, such as POLLNVAL, treat
          * it as if it failed. */
         if(ret >= 0 && (fd.revents & ~fd.events))
@@ -486,7 +504,13 @@ int _xcb_conn_wait(xcb_connection_t *c, pthread_cond_t *cond, struct iovec **vec
             break;
         }
 #else
-        ret = select(c->fd + 1, &rfds, &wfds, 0, 0);
+        struct timeval diff;
+        struct timeval *timeout = NULL;
+        if(deadline && now) {
+            timersub(deadline, now, &diff);
+            timeout = &diff;
+        }
+        ret = select(c->fd + 1, &rfds, &wfds, 0, timeout);
 #endif
     } while (ret == -1 && errno == EINTR);
     if(ret < 0)

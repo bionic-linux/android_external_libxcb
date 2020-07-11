@@ -35,6 +35,7 @@
 #include <unistd.h>
 #include <stdio.h>
 #include <errno.h>
+#include <sys/time.h> /* I bet this does not work on Windows... */
 
 #if USE_POLL
 #include <poll.h>
@@ -774,6 +775,42 @@ xcb_generic_event_t *xcb_poll_for_special_event(xcb_connection_t *c,
     event = get_special_event(c, se);
     if(!event && c->in.reading == 0 && _xcb_in_read(c)) /* _xcb_in_read shuts down the connection on error */
         event = get_special_event(c, se);
+    pthread_mutex_unlock(&c->iolock);
+    return event;
+}
+
+xcb_generic_event_t *xcb_wait_for_special_event_with_timeout(xcb_connection_t *c,
+                                                             xcb_special_event_t *se,
+                                                             unsigned int millisecs_timeout)
+{
+    struct timeval now, deadline, timeout;
+    special_list special;
+    xcb_generic_event_t *event;
+
+    if(c->has_error)
+        return 0;
+
+    timeout.tv_sec = millisecs_timeout / 1000;
+    timeout.tv_usec = (millisecs_timeout % 1000) * 1000;
+    gettimeofday(&now, NULL); // TODO: Check for errors?
+    timeradd(&now, &timeout, &deadline);
+
+    pthread_mutex_lock(&c->iolock);
+
+    insert_special(&c->in.special_waiters, &special, se);
+
+    /* get_special_event returns 0 on empty list. */
+    while(!(event = get_special_event(c, se))) {
+        if(timercmp(&deadline, &now, <))
+            break;
+        if(!_xcb_conn_timedwait(c, &se->special_event_cond, 0, 0, &now, &deadline))
+            break;
+        gettimeofday(&now, NULL); // TODO: Check for errors?
+    }
+
+    remove_special(&c->in.special_waiters, &special);
+
+    _xcb_in_wake_up_next_reader(c);
     pthread_mutex_unlock(&c->iolock);
     return event;
 }
