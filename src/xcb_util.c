@@ -107,6 +107,9 @@ static int _xcb_parse_display_path_to_socket(const char *name, char **host, char
     char path[PATH_MAX];
     int _screen = 0;
 
+    if (name[0] != '/')
+        return 0;
+
     xcb_strlcpy(path, name, sizeof(path));
     if (0 != stat(path, &sbuf)) {
         char *dot = strrchr(path, '.');
