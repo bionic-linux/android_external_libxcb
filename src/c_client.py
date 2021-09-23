@@ -2571,6 +2571,8 @@ def _c_reply(self, name):
         # certain variable size fields need to be unserialized explicitly
         _c('    %s *reply = (%s *) xcb_wait_for_reply_safe(c, cookie.sequence, e, sizeof (*reply));',
            self.c_reply_type, self.c_reply_type)
+        _c('    if (!reply)')
+        _c('        return NULL;')
         _c('    int i;')
 
         for field in unserialize_fields:
