@@ -6,3 +6,4 @@ void suite_add_test(Suite *s, TFun tf, const char *name);
 void suite_add_test(Suite *s, const TTest *tt, const char *name);
 #endif
 Suite *public_suite(void);
+Suite *integration_suite(void);

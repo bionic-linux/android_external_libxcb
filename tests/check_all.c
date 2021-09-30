@@ -21,6 +21,7 @@ int main(void)
 {
 	int nf;
 	SRunner *sr = srunner_create(public_suite());
+	srunner_add_suite(sr, integration_suite());
 	srunner_set_xml(sr, "CheckLog_xcb.xml");
 	srunner_run_all(sr, CK_NORMAL);
 	nf = srunner_ntests_failed(sr);
