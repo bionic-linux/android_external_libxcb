@@ -913,6 +913,7 @@ int _xcb_in_init(_xcb_in *in)
 
 void _xcb_in_destroy(_xcb_in *in)
 {
+    int i;
     pthread_cond_destroy(&in->event_cond);
     free_reply_list(in->current_reply);
     _xcb_map_delete(in->replies, (void (*)(void *)) free_reply_list);
@@ -929,6 +930,9 @@ void _xcb_in_destroy(_xcb_in *in)
         in->pending_replies = pend->next;
         free(pend);
     }
+    for(i = 0; i < in->in_fd.nfd; i++)
+        close(in->in_fd.fd[i]);
+    in->in_fd.nfd = 0;
 }
 
 void _xcb_in_wake_up_next_reader(xcb_connection_t *c)
@@ -1048,18 +1052,6 @@ int _xcb_in_read(xcb_connection_t *c)
                 &c->in.in_fd.fd[c->in.in_fd.ifd],
                 c->in.in_fd.nfd * sizeof (int));
         c->in.in_fd.ifd = 0;
-
-        /* If we have any left-over file descriptors after emptying
-         * the input buffer, then the server sent some that we weren't
-         * expecting.  Close them and mark the connection as broken;
-         */
-        if (c->in.queue_len == 0 && c->in.in_fd.nfd != 0) {
-            int i;
-            for (i = 0; i < c->in.in_fd.nfd; i++)
-                close(c->in.in_fd.fd[i]);
-            _xcb_conn_shutdown(c, XCB_CONN_CLOSED_FDPASSING_FAILED);
-            return 0;
-        }
     }
 #endif
 #ifndef _WIN32
