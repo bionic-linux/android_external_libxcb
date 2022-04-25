@@ -186,6 +186,11 @@ AC_SUBST(xcbincludedir)
 XCB_CHECK_VISIBILITY()
 
 AC_CHECK_FUNC(getaddrinfo, [AC_DEFINE(HAVE_GETADDRINFO, 1, [getaddrinfo() function is available])], )
+AC_CHECK_HEADER([linux/vm_sockets.h], [], [AC_DEFINE(HAVE_VSOCK_H, 1, [Define to 1 if you have the <linux/vm_sockets.h> header file.])],
+[#ifdef HAVE_VSOCK_H
+#include <linux/vm_sockets.h>
+#endif
+])
 
 case $host_os in
         # darwin through Snow Leopard has poll() but can't be used to poll character devices.
