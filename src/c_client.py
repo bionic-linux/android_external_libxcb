@@ -2569,9 +2569,10 @@ def _c_reply(self, name):
 
     if len(unserialize_fields)>0:
         # certain variable size fields need to be unserialized explicitly
-        _c('    %s *reply = (%s *) xcb_wait_for_reply(c, cookie.sequence, e);',
+        _c('    %s *reply = (%s *) xcb_wait_for_reply_safe(c, cookie.sequence, e, sizeof (*reply));',
            self.c_reply_type, self.c_reply_type)
         _c('    int i;')
+
         for field in unserialize_fields:
             if field.type.is_list:
                 _c('    %s %s_iter = %s(reply);', field.c_iterator_type, field.c_field_name, field.c_iterator_name)
@@ -2593,7 +2594,7 @@ def _c_reply(self, name):
         _c('    return reply;')
 
     else:
-        _c('    return (%s *) xcb_wait_for_reply(c, cookie.sequence, e);', self.c_reply_type)
+        _c('    return (%s *) xcb_wait_for_reply_safe(c, cookie.sequence, e, sizeof (%s));', self.c_reply_type, self.c_reply_type)
 
     _c('}')
 

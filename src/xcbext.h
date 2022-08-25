@@ -207,7 +207,7 @@ void xcb_send_fd(xcb_connection_t *c, int fd);
  * All replies that are generated while the socket is owned externally have
  * @p flags applied to them. For example, use XCB_REQUEST_CHECK if you don't
  * want errors to go to xcb's normal error handling, but instead having to be
- * picked up via xcb_wait_for_reply(), xcb_poll_for_reply() or
+ * picked up via xcb_wait_for_reply_safe(), xcb_poll_for_reply_safe() or
  * xcb_request_check().
  */
 int xcb_take_socket(xcb_connection_t *c, void (*return_socket)(void *closure), void *closure, int flags, uint64_t *sent);
@@ -237,10 +237,26 @@ int xcb_writev(xcb_connection_t *c, struct iovec *vector, int count, uint64_t re
 /* xcb_in.c */
 
 /**
+ * @brief Wait for the reply of a given request, with bounds checking.
+ * @param c The connection to the X server.
+ * @param request Sequence number of the request as returned by xcb_send_request().
+ * @param e Location to store errors in, or NULL. Ignored for unchecked requests.
+ * @param min_size The minimum size of the reply, in bytes.
+ *
+ * Returns the reply to the given request or returns null in the event of
+ * errors. Blocks until the reply or error for the request arrives, or an I/O
+ * error occurs. The returned pointer is guaranteed to point to at least min_size
+ * bytes of data.
+ */
+void *xcb_wait_for_reply_safe(xcb_connection_t *c, unsigned int request,
+                              xcb_generic_error_t **e, size_t min_size);
+
+/**
  * @brief Wait for the reply of a given request.
  * @param c The connection to the X server.
  * @param request Sequence number of the request as returned by xcb_send_request().
  * @param e Location to store errors in, or NULL. Ignored for unchecked requests.
+ * @deprecated Does not perform bounds checks; use xcb_wait_for_reply_safe() instead.
  *
  * Returns the reply to the given request or returns null in the event of
  * errors. Blocks until the reply or error for the request arrives, or an I/O
@@ -253,6 +269,28 @@ void *xcb_wait_for_reply(xcb_connection_t *c, unsigned int request, xcb_generic_
  * @param c The connection to the X server.
  * @param request 64-bit sequence number of the request as returned by xcb_send_request64().
  * @param e Location to store errors in, or NULL. Ignored for unchecked requests.
+ * @param size The number of bytes expected in the reply.  If the reply is too short,
+ * the connection will be shut down.  If the return value is not null, it is guaranteed to
+ * point to size bytes of memory.
+ *
+ * Returns the reply to the given request or returns null in the event of
+ * errors. Blocks until the reply or error for the request arrives, or an I/O
+ * error occurs.
+ *
+ * Unlike its xcb_wait_for_reply_safe() counterpart, the given sequence number is not
+ * automatically "widened" to 64-bit.
+ */
+void *xcb_wait_for_reply64_safe(xcb_connection_t *c, uint64_t request,
+                                xcb_generic_error_t **e, size_t size);
+
+/**
+ * @brief Wait for the reply of a given request, with 64-bit sequence number
+ * @param c The connection to the X server.
+ * @param request 64-bit sequence number of the request as returned by xcb_send_request64().
+ * @param e Location to store errors in, or NULL. Ignored for unchecked requests.
+ * @deprecated This function does not perform bounds checks.  If reply is not NULL on
+ * return, it is only guaranteed to point to 32 bytes of memory.  Use
+ * xcb_wait_for_reply64_safe() instead.
  *
  * Returns the reply to the given request or returns null in the event of
  * errors. Blocks until the reply or error for the request arrives, or an I/O
@@ -269,7 +307,44 @@ void *xcb_wait_for_reply64(xcb_connection_t *c, uint64_t request, xcb_generic_er
  * @param request Sequence number of the request as returned by xcb_send_request().
  * @param reply Location to store the reply in, must not be NULL.
  * @param error Location to store errors in, or NULL. Ignored for unchecked requests.
+ * @param size The number of bytes expected in the reply.  If the reply is too short,
+ * the connection will be shut down.  If reply points to a non-NULL pointer on return,
+ * that pointer is guaranteed to point to size bytes of memory, or 32 bytes if size is
+ * less than 32.
  * @return 1 when the reply to the request was returned, else 0.
+ *
+ * Checks if the reply to the given request already received. Does not block.
+ */
+int xcb_poll_for_reply_safe(xcb_connection_t *c, unsigned int request, void **reply, xcb_generic_error_t **error, size_t size);
+
+/**
+ * @brief Poll for the reply of a given request, with 64-bit sequence number.
+ * @param c The connection to the X server.
+ * @param request 64-bit sequence number of the request as returned by xcb_send_request().
+ * @param reply Location to store the reply in, must not be NULL.
+ * @param error Location to store errors in, or NULL. Ignored for unchecked requests.
+ * @param size The number of bytes expected in the reply.  If the reply is too short,
+ * the connection will be shut down.  If reply points to a non-NULL pointer on return,
+ * that pointer is guaranteed to point to size bytes of memory, or 32 bytes if size is
+ * less than 32.
+ * @return 1 when the reply to the request was returned, else 0.
+ *
+ * Checks if the reply to the given request already received. Does not block.
+ *
+ * Unlike its xcb_poll_for_reply_safe() counterpart, the given sequence number is not
+ * automatically "widened" to 64-bit.
+ */
+int xcb_poll_for_reply64_safe(xcb_connection_t *c, uint64_t request, void **reply, xcb_generic_error_t **error, size_t size);
+
+/**
+ * @brief Poll for the reply of a given request.
+ * @param c The connection to the X server.
+ * @param request Sequence number of the request as returned by xcb_send_request().
+ * @param reply Location to store the reply in, must not be NULL.
+ * @param error Location to store errors in, or NULL. Ignored for unchecked requests.
+ * @return 1 when the reply to the request was returned, else 0.
+ * @deprecated This function does not perform bounds checks.  If reply is not NULL on
+ * return, it is only guaranteed to point to 32 bytes of memory.
  *
  * Checks if the reply to the given request already received. Does not block.
  */
@@ -282,6 +357,8 @@ int xcb_poll_for_reply(xcb_connection_t *c, unsigned int request, void **reply, 
  * @param reply Location to store the reply in, must not be NULL.
  * @param error Location to store errors in, or NULL. Ignored for unchecked requests.
  * @return 1 when the reply to the request was returned, else 0.
+ * @deprecated This function does not perform bounds checks.  If reply is not NULL on
+ * return, it is only guaranteed to point to 32 bytes of memory.
  *
  * Checks if the reply to the given request already received. Does not block.
  *
