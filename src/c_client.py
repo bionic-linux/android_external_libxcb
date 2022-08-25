@@ -426,6 +426,7 @@ def _c_type_setup(self, name, postfix):
         self.c_container = 'struct'
         for bitcase in self.bitcases:
             bitcase.c_field_name = _cpp(bitcase.field_name)
+            bitcase.c_field_offset = bitcase.offset
             bitcase_name = bitcase.field_type if bitcase.type.has_name else name
             _c_type_setup(bitcase.type, bitcase_name, ())
 
@@ -444,6 +445,7 @@ def _c_type_setup(self, name, postfix):
 
             field.c_field_const_type = ('' if field.type.nmemb == 1 else 'const ') + field.c_field_type
             field.c_field_name = _cpp(field.field_name)
+            field.c_field_offset = field.offset
             field.c_subscript = '[%d]' % field.type.nmemb if (field.type.nmemb and field.type.nmemb > 1) else ''
             field.c_pointer = ' ' if field.type.nmemb == 1 else '*'
 
@@ -1790,7 +1792,10 @@ def _c_accessors_field(self, field):
         _c('%s (const %s *R)', field.c_accessor_name, c_type)
         _c('{')
         if field.prev_varsized_field is None:
-            _c('    return (%s *) (R + 1);', field.c_field_type)
+            if field.c_field_offset is not None:
+                _c('    return (%s *) ((char *)R + %s);', field.c_field_type, field.c_field_offset)
+            else:
+                _c('    return (%s *) (R + 1);', field.c_field_type)
         else:
             _c('    xcb_generic_iterator_t prev = %s;', _c_iterator_get_end(field.prev_varsized_field, 'R'))
             _c('    return * (%s *) ((char *) prev.data + XCB_TYPE_PAD(%s, prev.index) + %d);',
@@ -1808,7 +1813,10 @@ def _c_accessors_field(self, field):
         _c('%s (const %s *R)', field.c_accessor_name, c_type)
         _c('{')
         if field.prev_varsized_field is None:
-            _c('    return (%s) (R + 1);', return_type)
+            if field.c_field_offset is not None:
+                _c('    return (%s *) ((char *)R + %s);', field.c_field_type, field.c_field_offset)
+            else:
+                _c('    return (%s *) (R + 1);', field.c_field_type)
             # note: the special case 'variable fields followed by fixed size fields'
             #       is not of any consequence here, since the ordering gets
             #       'corrected' in the reply function
@@ -1920,7 +1928,10 @@ def _c_accessors_list(self, field):
         if switch_obj is not None:
             _c('    return %s;', fields[field.c_field_name][0])
         elif field.prev_varsized_field is None:
-            _c('    return (%s *) (R + 1);', field.c_field_type)
+            if field.c_field_offset is not None:
+                _c('    return (%s *) ((char *)R + %s);', field.c_field_type, field.c_field_offset)
+            else:
+                _c('    return (%s *) (R + 1);', field.c_field_type)
         else:
             (prev_varsized_field, align_pad) = get_align_pad(field)
 
