@@ -416,6 +416,7 @@ static int poll_for_reply(xcb_connection_t *c, uint64_t request, void **reply, x
 {
     struct reply_list *head;
 
+    *reply = NULL;
     /* If an error occurred when issuing the request, fail immediately. */
     if(!request)
         head = 0;
@@ -447,7 +448,6 @@ static int poll_for_reply(xcb_connection_t *c, uint64_t request, void **reply, x
 
     if(error)
         *error = 0;
-    *reply = 0;
 
     if(head)
     {
