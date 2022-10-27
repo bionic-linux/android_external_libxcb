@@ -8,4 +8,4 @@ Description: XCB DRI2 Extension
 Version: @PACKAGE_VERSION@
 Requires.private: xcb
 Libs: -L${libdir} -lxcb-dri2
-Cflags: -I${includedir}
+Cflags: -I${includedir} @XCB_CFLAGS@

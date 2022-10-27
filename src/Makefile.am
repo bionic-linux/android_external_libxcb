@@ -4,7 +4,7 @@ EXTSOURCES =	xproto.c \
 		bigreq.c \
 		xc_misc.c
 
-AM_CFLAGS = $(BASE_CFLAGS) $(NEEDED_CFLAGS) $(XDMCP_CFLAGS)
+AM_CFLAGS = $(BASE_CFLAGS) $(NEEDED_CFLAGS) $(XDMCP_CFLAGS) $(XCB_CFLAGS)
 libxcb_la_LIBADD = $(NEEDED_LIBS) $(XDMCP_LIBS)
 libxcb_la_SOURCES = \
 		xcb_conn.c xcb_out.c xcb_in.c xcb_ext.c xcb_xid.c \
@@ -249,7 +249,7 @@ nodist_libxcb_ge_la_SOURCES = ge.c ge.h
 endif
 
 EXTHEADERS=$(EXTSOURCES:.c=.h)
-xcbinclude_HEADERS = xcb.h xcbext.h
+xcbinclude_HEADERS = xcb.h xcbext.h config.h
 if XCB_HAVE_WIN32
 xcbinclude_HEADERS += xcb_windefs.h
 endif

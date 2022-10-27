@@ -8,4 +8,4 @@ Description: XCB Xv Extension
 Version: @PACKAGE_VERSION@
 Requires.private: xcb xcb-shm
 Libs: -L${libdir} -lxcb-xv
-Cflags: -I${includedir}
+Cflags: -I${includedir} @XCB_CFLAGS@

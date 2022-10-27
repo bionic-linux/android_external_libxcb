@@ -10,4 +10,4 @@ Version: @PACKAGE_VERSION@
 Requires.private: @NEEDED@
 Libs: -L${libdir} -lxcb
 Libs.private: @LIBS@
-Cflags: -I${includedir}
+Cflags: -I${includedir} @XCB_CFLAGS@

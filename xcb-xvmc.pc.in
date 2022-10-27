@@ -8,4 +8,4 @@ Description: XCB XvMC Extension
 Version: @PACKAGE_VERSION@
 Requires.private: xcb xcb-xv
 Libs: -L${libdir} -lxcb-xvmc
-Cflags: -I${includedir}
+Cflags: -I${includedir} @XCB_CFLAGS@

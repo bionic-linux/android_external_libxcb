@@ -279,7 +279,7 @@ def c_open(self):
     _h('#include "xcb.h"')
 
     _c('#ifdef HAVE_CONFIG_H')
-    _c('#include "config.h"')
+    _hc('#include "config.h"')
     _c('#endif')
     _c('#include <stdlib.h>')
     _c('#include <stdalign.h>')
@@ -1642,7 +1642,7 @@ def _c_iterator(self, name):
             param[0],
             ' ' * (len(self.c_type) + 1 - len(param[0])),
             param[2])
-    _h('} %s;', self.c_iterator_type)
+    _h('} XCB_MAY_ALIAS %s;', self.c_iterator_type)
 
     _h_setlevel(1)
     _c_setlevel(1)
@@ -2254,7 +2254,7 @@ def _c_complex(self, force_packed = False):
             if b.type.has_name:
                 _h('    } %s;', b.c_field_name)
 
-    _h('} %s%s;', 'XCB_PACKED ' if force_packed else '', self.c_type)
+    _h('} %sXCB_MAY_ALIAS %s;', 'XCB_PACKED ' if force_packed else '', self.c_type)
 
 def c_struct(self, name):
     '''
@@ -2756,7 +2756,7 @@ def _c_cookie(self, name):
     _h(' **/')
     _h('typedef struct %s {', self.c_cookie_type)
     _h('    unsigned int sequence;')
-    _h('} %s;', self.c_cookie_type)
+    _h('} XCB_MAY_ALIAS %s;', self.c_cookie_type)
 
 def _man_request(self, name, void, aux):
     param_fields = [f for f in self.fields if f.visible]
@@ -2812,7 +2812,7 @@ def _man_request(self, name, void, aux):
         f.write('.SS Reply datastructure\n')
         f.write('.nf\n')
         f.write('.sp\n')
-        f.write('typedef %s %s {\n' % (self.reply.c_container, self.reply.c_type))
+        f.write('typedef XCB_MAY_ALIAS %s %s {\n' % (self.reply.c_container, self.reply.c_type))
         struct_fields = []
         maxtypelen = 0
 
@@ -3389,7 +3389,7 @@ def c_event(self, name):
     else:
         # Typedef
         _h('')
-        _h('typedef %s %s;', _t(self.name + ('event',)), _t(name + ('event',)))
+        _h('typedef XCB_MAY_ALIAS %s %s;', _t(self.name + ('event',)), _t(name + ('event',)))
 
         # Create sizeof-function for eventcopies for compatibility reasons
         if self.c_need_sizeof:
@@ -3424,7 +3424,7 @@ def c_error(self, name):
     else:
         # Typedef
         _h('')
-        _h('typedef %s %s;', _t(self.name + ('error',)), _t(name + ('error',)))
+        _h('typedef XCB_MAY_ALIAS %s %s;', _t(self.name + ('error',)), _t(name + ('error',)))
 
 
 # Main routine starts here

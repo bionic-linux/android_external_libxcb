@@ -8,4 +8,4 @@ Description: XCB Record Extension
 Version: @PACKAGE_VERSION@
 Requires.private: xcb
 Libs: -L${libdir} -lxcb-record
-Cflags: -I${includedir}
+Cflags: -I${includedir} @XCB_CFLAGS@

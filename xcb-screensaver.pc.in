@@ -8,4 +8,4 @@ Description: XCB Screensaver Extension
 Version: @PACKAGE_VERSION@
 Requires.private: xcb
 Libs: -L${libdir} -lxcb-screensaver
-Cflags: -I${includedir}
+Cflags: -I${includedir} @XCB_CFLAGS@

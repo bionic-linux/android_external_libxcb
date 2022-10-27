@@ -8,4 +8,4 @@ Description: XCB DPMS Extension
 Version: @PACKAGE_VERSION@
 Requires.private: xcb
 Libs: -L${libdir} -lxcb-dpms
-Cflags: -I${includedir}
+Cflags: -I${includedir} @XCB_CFLAGS@

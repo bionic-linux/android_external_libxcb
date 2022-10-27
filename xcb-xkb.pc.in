@@ -8,4 +8,4 @@ Description: XCB Keyboard Extension (EXPERIMENTAL)
 Version: @PACKAGE_VERSION@
 Requires.private: xcb
 Libs: -L${libdir} -lxcb-xkb
-Cflags: -I${includedir}
+Cflags: -I${includedir} @XCB_CFLAGS@

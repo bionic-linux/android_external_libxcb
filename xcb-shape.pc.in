@@ -8,4 +8,4 @@ Description: XCB Shape Extension
 Version: @PACKAGE_VERSION@
 Requires.private: xcb
 Libs: -L${libdir} -lxcb-shape
-Cflags: -I${includedir}
+Cflags: -I${includedir} @XCB_CFLAGS@

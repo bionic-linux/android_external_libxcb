@@ -8,4 +8,4 @@ Description: XCB Sync Extension
 Version: @PACKAGE_VERSION@
 Requires.private: xcb
 Libs: -L${libdir} -lxcb-sync
-Cflags: -I${includedir}
+Cflags: -I${includedir} @XCB_CFLAGS@
