@@ -39,6 +39,11 @@ fi
 PKG_CHECK_MODULES(CHECK, [check >= 0.9.6], [HAVE_CHECK=yes], [HAVE_CHECK=no])
 AM_CONDITIONAL(HAVE_CHECK, test x$HAVE_CHECK = xyes)
 
+AX_CHECK_COMPILE_FLAG([-std=c11], [], [
+  echo "C compiler cannot compile C11 code"
+  exit -1
+])
+
 XSLTPROC=no
 HTML_CHECK_RESULT=no
 if test x"$HAVE_CHECK" = xyes; then
