@@ -44,6 +44,9 @@
 #include <unistd.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
+#ifdef HAVE_VSOCK_H
+#include <linux/vm_sockets.h>
+#endif
 #include <sys/un.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
@@ -216,6 +219,9 @@ int xcb_parse_display(const char *name, char **host, int *displayp,
 }
 
 static int _xcb_open_tcp(const char *host, char *protocol, const unsigned short port);
+#ifdef HAVE_VSOCK_H
+static int _xcb_open_vsock(const char *host, char *protocol, const unsigned short port);
+#endif
 #ifndef _WIN32
 static int _xcb_open_unix(char *protocol, const char *file);
 #endif /* !WIN32 */
@@ -235,6 +241,14 @@ static int _xcb_open(const char *host, char *protocol, const int display)
     size_t filelen;
     char *file = NULL;
     int actual_filelen;
+
+#ifdef HAVE_VSOCK_H
+    if (protocol && (strcmp("vsock",protocol) == 0))
+    {
+        unsigned short port = X_TCP_PORT + display;
+        return _xcb_open_vsock(host, protocol, port);
+    }
+#endif
 
     /* If protocol or host is "unix", fall through to Unix socket code below */
     if ((!protocol || (strcmp("unix",protocol) != 0)) &&
@@ -432,6 +446,49 @@ static int _xcb_open_tcp(const char *host, char *protocol, const unsigned short 
     }
 #endif
 }
+
+#ifdef HAVE_VSOCK_H
+static int _xcb_open_vsock(const char *host, char *protocol, const unsigned short port)
+{
+    struct sockaddr_vm savm;
+    int fd;
+
+    if(protocol && strcmp("vsock",protocol))
+        return -1;
+
+    fd = _xcb_socket(AF_VSOCK, SOCK_STREAM, 0);
+    if(fd == -1)
+        return -1;
+
+    {
+        socklen_t len = sizeof(int);
+        int val = 0;
+
+        if((getsockopt(fd, SOL_SOCKET, SO_SNDBUF, &val, &len) == 0) && (val < (64 * 1024)))
+        {
+            val = (64 * 1024);
+            setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &val, sizeof(int));
+        }
+    }
+
+    memset(&savm, 0, sizeof(savm));
+
+    savm.svm_family = AF_VSOCK;
+    savm.svm_cid = VMADDR_CID_HOST;
+
+    if(*host != '\0')
+        savm.svm_cid = (unsigned int)atoi(host);
+
+    savm.svm_port = port;
+
+    if(connect(fd, (struct sockaddr*)&savm, sizeof(savm)) == -1)
+    {
+        close(fd);
+        return -1;
+    }
+    return fd;
+}
+#endif
 
 #ifndef _WIN32
 static int _xcb_open_unix(char *protocol, const char *file)
