@@ -5,7 +5,7 @@ EXTSOURCES =	xproto.c \
 		xc_misc.c
 
 AM_CFLAGS = $(BASE_CFLAGS) $(NEEDED_CFLAGS) $(XDMCP_CFLAGS)
-libxcb_la_LIBADD = $(NEEDED_LIBS) $(XDMCP_LIBS)
+libxcb_la_LIBADD = $(LIBS) $(NEEDED_LIBS) $(XDMCP_LIBS)
 libxcb_la_SOURCES = \
 		xcb_conn.c xcb_out.c xcb_in.c xcb_ext.c xcb_xid.c \
 		xcb_list.c xcb_util.c xcb_auth.c c_client.py

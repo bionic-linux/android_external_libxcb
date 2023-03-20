@@ -83,6 +83,16 @@ int xcb_sumof(uint8_t *list, int len)
 }
 
 #ifdef HAVE_LAUNCHD
+
+#ifdef HAVE_STRLCPY
+# ifdef HAVE_LIBBSD
+#  include <bsd/string.h> /* for strlcpy */
+# endif
+# define xcb_strlcpy(dst, src, size) strlcpy(dst, src, size)
+#else
+# include "strlcpy.c"
+#endif
+
 /* Return true and parse if name matches <path to socket>[.<screen>]
  * Upon success:
  *     host = <path to socket>
@@ -97,7 +107,10 @@ static int _xcb_parse_display_path_to_socket(const char *name, char **host, char
     char path[PATH_MAX];
     int _screen = 0;
 
-    strlcpy(path, name, sizeof(path));
+    if (name[0] != '/')
+        return 0;
+
+    xcb_strlcpy(path, name, sizeof(path));
     if (0 != stat(path, &sbuf)) {
         char *dot = strrchr(path, '.');
         if (!dot)
@@ -231,6 +244,9 @@ static int _xcb_open(const char *host, char *protocol, const int display)
 #else
     static const char unix_base[] = "/tmp/.X11-unix/X";
 #endif
+#ifdef HAVE_LAUNCHD
+    struct stat sbuf;
+#endif
     const char *base = unix_base;
     size_t filelen;
     char *file = NULL;
@@ -262,7 +278,6 @@ static int _xcb_open(const char *host, char *protocol, const int display)
 #endif
 
 #ifdef HAVE_LAUNCHD
-    struct stat sbuf;
     if (0 == stat(host, &sbuf)) {
         file = strdup(host);
         if(file == NULL)

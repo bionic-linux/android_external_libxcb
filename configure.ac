@@ -172,6 +172,15 @@ dnl check for support for Solaris Trusted Extensions
 AC_CHECK_HEADERS([tsol/label.h])
 AC_CHECK_FUNCS([is_system_labeled])
 
+dnl check for strlcpy
+AC_SEARCH_LIBS(strlcpy, [bsd], [AC_DEFINE(HAVE_STRLCPY, 1, [strlcpy() function is available])],)
+
+case "$LIBS" in
+	*-lbsd*)
+		AC_DEFINE(HAVE_LIBBSD, 1, [use -lbsd for bsd string functions])
+		;;
+esac	
+
 dnl check for IOV_MAX, and fall back to UIO_MAXIOV on BSDish systems
 AC_CHECK_DECL([IOV_MAX], [],
               [AC_CHECK_DECL([UIO_MAXIOV], [AC_DEFINE([IOV_MAX], [UIO_MAXIOV])],
@@ -247,7 +256,7 @@ XCB_EXTENSION(XTest, yes)
 XCB_EXTENSION(Xv, yes)
 XCB_EXTENSION(XvMC, yes)
 
-AC_ARG_WITH(launchd, AS_HELP_STRING([--with-launchd], [Build with support for Apple's launchd (default: auto)]), [LAUNCHD=$withval], [LAUNCHD=auto])
+AC_ARG_WITH(launchd, AS_HELP_STRING([--with-launchd], [Build with support for Apple's launchd (default: auto)]), [LAUNCHD=$withval], [LAUNCHD=yes])
 if test "x$LAUNCHD" = xauto; then
         unset LAUNCHD
         AC_CHECK_PROG(LAUNCHD, [launchd], [yes], [no], [$PATH$PATH_SEPARATOR/sbin])
