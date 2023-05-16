@@ -281,6 +281,7 @@ def c_open(self):
     _c('#include "config.h"')
     _c('#endif')
     _c('#include <stdlib.h>')
+    _c('#include <stdalign.h>')
     _c('#include <string.h>')
     _c('#include <assert.h>')
     _c('#include <stddef.h>  /* for offsetof() */')
@@ -288,7 +289,6 @@ def c_open(self):
     _c('#include "%s.h"', _ns.header)
 
     _c('')
-    _c('#define ALIGNOF(type) offsetof(struct { char dummy; type member; }, member)')
 
     if _ns.is_ext:
         for (n, h) in self.direct_imports:
@@ -1266,7 +1266,7 @@ def _c_serialize_helper_fields(context, self,
             count += 1
 
         code_lines.append(
-            '%s    xcb_align_to = ALIGNOF(%s);'
+            '%s    xcb_align_to = alignof(%s);'
              % (space,
                  'char'
                   if field.c_field_type == 'void' or field.type.is_switch
