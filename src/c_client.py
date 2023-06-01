@@ -308,6 +308,13 @@ def c_open(self):
 
         _c('')
         _c('xcb_extension_t %s = { "%s", 0 };', _ns.c_ext_global_name, _ns.ext_xname)
+    _c('static int xcb_checked_mul(unsigned long long x, unsigned long long y)')
+    _c('{')
+    _c('    int z;')
+    _c('    if (__builtin_mul_overflow(x, y, &z))')
+    _c('        return -1;')
+    _c('    return z;')
+    _c('}')
 
 def c_close(self):
     '''
@@ -528,12 +535,14 @@ def _c_type_setup(self, name, postfix):
                 #   special cases -> unserialize
                 if self.is_switch or self.c_var_followed_by_fixed_fields:
                     _c_serialize('unserialize', self)
+                    _c_serialize('unserialize_checked', self)
 
         if self.c_need_sizeof:
             if self.c_sizeof_name not in finished_sizeof:
                 if not module.namespace.is_ext or self.name[:2] == module.namespace.prefix:
                     finished_sizeof.append(self.c_sizeof_name)
                     _c_serialize('sizeof', self)
+                    _c_serialize('sizeof_checked', self)
 
 # Functions for querying field properties
 def _c_field_needs_list_accessor(field):
@@ -791,8 +800,12 @@ def get_serialize_params(context, self, buffer_var='_buffer', aux_var='_aux'):
     # 1. the parameter for the void * buffer
     if  'serialize' == context:
         params.append(('void', '**', buffer_var))
-    elif context in ('unserialize', 'unpack', 'sizeof'):
+    elif context in ('unserialize', 'unserialize_checked', 'unpack', 'unpack_checked', 'sizeof', 'sizeof_checked'):
         params.append(('const void', '*', buffer_var))
+        if context.endswith('checked'):
+            params.append(('const void', '*', 'xcb_end'))
+    else:
+        assert False
 
     # 2. any expr fields that cannot be resolved within self and descendants
     unresolved_fields = resolve_expr_fields(self)
@@ -815,9 +828,9 @@ def get_serialize_params(context, self, buffer_var='_buffer', aux_var='_aux'):
     # 4. aux argument
     if 'serialize' == context:
         add_param(params, ('const %s' % self.c_type, '*', aux_var))
-    elif 'unserialize' == context:
+    elif context.startswith('unserialize'):
         add_param(params, ('%s' % self.c_type, '**', aux_var))
-    elif 'unpack' == context:
+    elif context.startswith('unpack'):
         add_param(params, ('%s' % self.c_type, '*', aux_var))
 
     # 5. switch contains all variable size fields as struct members
@@ -849,7 +862,9 @@ def _c_serialize_helper_insert_padding(context, complex_type, code_lines, space,
             code_lines.append('%s        xcb_parts[xcb_parts_idx].iov_base = xcb_pad0;' % space)
             code_lines.append('%s        xcb_parts[xcb_parts_idx].iov_len = xcb_pad;' % space)
             code_lines.append('%s        xcb_parts_idx++;' % space)
-        elif context in ('unserialize', 'unpack', 'sizeof'):
+        elif context in ('unserialize', 'unserialize_checked', 'unpack', 'unpack_checked', 'sizeof', 'sizeof_checked'):
+            if context.endswith('checked'):
+                _c_emit_bounds_check(code_lines, space + '    ', 'xcb_pad')
             code_lines.append('%s        xcb_tmp += xcb_pad;' % space)
 
         code_lines.append('%s        xcb_pad = 0;' % space)
@@ -907,7 +922,7 @@ def _c_serialize_helper_switch(context, self, complex_name,
 
 #    if 'serialize' == context:
 #        count += _c_serialize_helper_insert_padding(context, self, code_lines, space, False)
-#    elif context in ('unserialize', 'unpack', 'sizeof'):
+#    elif context in ('unserialize', 'unserialize_checked', 'unpack', 'unpack_checked', 'sizeof', 'sizeof_checked'):
 #        # padding
 #        code_lines.append('%s    xcb_pad = -xcb_block_len & 3;' % space)
 #        code_lines.append('%s    xcb_buffer_len += xcb_block_len + xcb_pad;' % space)
@@ -946,13 +961,16 @@ def _c_serialize_helper_switch_field(context, self, field, c_switch_variable, pr
     if 'serialize' == context:
         length = "%s(&%s, %s&%s%s)" % (field.type.c_serialize_name, c_switch_variable,
                                        c_field_names, prefix_str, field.c_field_name)
-    elif context in ('unserialize', 'unpack'):
-        length = "%s(xcb_tmp, %s&%s%s)" % (field.type.c_unpack_name,
-                                           c_field_names, prefix_str, field.c_field_name)
-    elif 'sizeof' == context:
+    elif context in ('unserialize', 'unserialize_checked', 'unpack', 'unpack_checked'):
+        length = "%s%s(xcb_tmp, %s%s&%s%s)" % (field.type.c_unpack_name, '_checked' if context.endswith('checked') else '',
+                                               'xcb_end, ' if context.endswith('checked') else '',
+                                               c_field_names, prefix_str, field.c_field_name)
+    elif context in ('sizeof', 'sizeof_checked'):
         # remove trailing ", " from c_field_names because it will be used at end of arglist
         my_c_field_names = c_field_names[:-2]
         length = "%s(xcb_tmp, %s)" % (field.type.c_sizeof_name, my_c_field_names)
+    else:
+        assert False, 'bad context %r' % context
 
     return length
 
@@ -1014,7 +1032,7 @@ def _c_serialize_helper_list_field(context, self, field,
         list_length = _c_accessor_get_expr(expr, field_mapping)
 
     # default: list with fixed size elements
-    length = '%s * sizeof(%s)' % (list_length, field.type.member.c_wiretype)
+    length = 'xcb_checked_mul(%s, sizeof(%s))' % (list_length, field.type.member.c_wiretype)
 
     # list with variable-sized elements
     if not field.type.member.fixed_size():
@@ -1027,7 +1045,7 @@ def _c_serialize_helper_list_field(context, self, field,
 
         #
         length = ''
-        if context in ('unserialize', 'sizeof', 'unpack'):
+        if context in ('unserialize', 'unserialize_checked', 'sizeof', 'unpack', 'unpack_checked', 'sizeof_checked'):
             int_i = '    unsigned int i;'
             xcb_tmp_len = '    unsigned int xcb_tmp_len;'
             if int_i not in temp_vars:
@@ -1037,8 +1055,18 @@ def _c_serialize_helper_list_field(context, self, field,
             # loop over all list elements and call sizeof repeatedly
             # this should be a bit faster than using the iterators
             code_lines.append("%s    for(i=0; i<%s; i++) {" % (space, list_length))
-            code_lines.append("%s        xcb_tmp_len = %s(xcb_tmp%s);" %
-                              (space, field.type.c_sizeof_name, member_arg_str))
+            if context.endswith('checked'):
+                code_lines.append('%s        if ((const char *)xcb_end < (const char *)xcb_tmp)' % (space,))
+                code_lines.append('%s            abort();' % (space,))
+                code_lines.append("%s        xcb_tmp_len = %s_checked(xcb_tmp, xcb_end%s);" %
+                                  (space, field.type.c_sizeof_name, member_arg_str))
+                code_lines.append("%s        if (xcb_tmp_len < 0)" % (space,))
+                code_lines.append("%s            return xcb_tmp_len;" % (space,))
+                code_lines.append('%s        if ((size_t)((const char *)xcb_end - (const char *)xcb_tmp) < xcb_tmp_len)' % (space,))
+                code_lines.append('%s            return -1;' % (space,))
+            else:
+                code_lines.append("%s        xcb_tmp_len = %s(xcb_tmp%s);" %
+                                  (space, field.type.c_sizeof_name, member_arg_str))
             code_lines.append("%s        xcb_block_len += xcb_tmp_len;" % space)
             code_lines.append("%s        xcb_tmp += xcb_tmp_len;" % space)
             code_lines.append("%s    }" % space)
@@ -1069,7 +1097,7 @@ def _c_serialize_helper_fields_fixed_size(context, self, field,
     # default for simple cases: call sizeof()
     length = "sizeof(%s)" % field.c_field_type
 
-    if context in ('unserialize', 'unpack', 'sizeof'):
+    if context in ('unserialize', 'unserialize_checked', 'unpack', 'unpack_checked', 'sizeof', 'sizeof_checked'):
         # default: simple cast
         value = '    %s = *(%s *)xcb_tmp;' % (abs_field_name, field.c_field_type)
 
@@ -1077,7 +1105,7 @@ def _c_serialize_helper_fields_fixed_size(context, self, field,
         if field.type.is_pad and field.type.nmemb > 1:
             value = ''
             for i in range(field.type.nmemb):
-                code_lines.append('%s    %s[%d] = *(%s *)xcb_tmp;' %
+                code_lines.append('%s    %s[%d] = *(const %s *)xcb_tmp;' %
                                   (space, abs_field_name, i, field.c_field_type))
             # total padding = sizeof(pad0) * nmemb
             length += " * %d" % field.type.nmemb
@@ -1128,16 +1156,16 @@ def _c_serialize_helper_fields_variable_size(context, self, field,
                                              space, prefix):
     prefix_str = _c_helper_fieldaccess_expr(prefix)
 
-    if context in ('unserialize', 'unpack', 'sizeof'):
+    if context in ('unserialize', 'unserialize_checked', 'unpack', 'unpack_checked', 'sizeof', 'sizeof_checked'):
         value = ''
         var_field_name = 'xcb_tmp'
 
         # special case: intermixed fixed and variable size fields
-        if self.c_var_followed_by_fixed_fields and 'unserialize' == context:
+        if self.c_var_followed_by_fixed_fields and context.startswith('unserialize'):
             value = '    %s = (%s *)xcb_tmp;' % (field.c_field_name, field.c_field_type)
             temp_vars.append('    %s *%s;' % (field.type.c_type, field.c_field_name))
         # special case: switch
-        if 'unpack' == context:
+        if context.startswith('unpack'):
             value = '    %s%s = (%s *)xcb_tmp;' % (prefix_str, field.c_field_name, field.c_field_type)
 
     elif 'serialize' == context:
@@ -1175,6 +1203,12 @@ def _c_serialize_helper_fields_variable_size(context, self, field,
 
     return (value, length)
 
+def _c_emit_bounds_check(code_lines, space, length):
+    code_lines.append('%s    if ((const char *)xcb_end < (const char *)xcb_tmp)' % (space,))
+    code_lines.append('%s        abort();' % (space,))
+    code_lines.append('%s    if ((size_t)((const char *)xcb_end - (const char *)xcb_tmp) < %s)' % (space, length))
+    code_lines.append('%s        return -1;' % (space,))
+
 def _c_serialize_helper_fields(context, self,
                                code_lines, temp_vars,
                                space, prefix, is_case_or_bitcase):
@@ -1188,7 +1222,7 @@ def _c_serialize_helper_fields(context, self,
         if not field.wire:
             continue
         if not field.visible:
-            if not ((field.wire and not field.auto) or 'unserialize' == context):
+            if not ((field.wire and not field.auto) or context.startswith('unserialize')):
                 continue
 
         # switch/bitcase: fixed size fields must be considered explicitly
@@ -1239,24 +1273,39 @@ def _c_serialize_helper_fields(context, self,
         if field.type.fixed_size():
             if is_case_or_bitcase or self.c_var_followed_by_fixed_fields:
                 # keep track of (un)serialized object's size
-                code_lines.append('%s    xcb_block_len += %s;' % (space, length))
+                assert 'xcb_block_len' not in length
                 if context in ('unserialize', 'unpack', 'sizeof'):
                     code_lines.append('%s    xcb_tmp += %s;' % (space, length))
+                elif context in ('unserialize_checked', 'sizeof_checked', 'unpack_checked'):
+                    _c_emit_bounds_check(code_lines, space, length)
+                    code_lines.append('%s    xcb_tmp += %s;' % (space, length))
+                code_lines.append('%s    xcb_block_len += %s;' % (space, length))
         else:
             # variable size objects or bitcase:
             #   value & length might have been inserted earlier for special cases
             if '' != length:
                 # special case: intermixed fixed and variable size fields
                 if (not field.type.fixed_size() and
-                    self.c_var_followed_by_fixed_fields and 'unserialize' == context):
+                    self.c_var_followed_by_fixed_fields and context.startswith('unserialize')):
                     temp_vars.append('    int %s_len;' % field.c_field_name)
                     code_lines.append('%s    %s_len = %s;' % (space, field.c_field_name, length))
+                    code_lines.append('%s    if (__builtin_add_overflow(xcb_block_len, %s_len, &xcb_block_len))' % (space, field.c_field_name))
+                    if context.endswith('checked'):
+                        code_lines.append('%s        return -1;' % (space,))
+                        _c_emit_bounds_check(code_lines, space, field.c_field_name)
+                    else:
+                        code_lines.append('%s        abort();' % (space,))
                     code_lines.append('%s    xcb_block_len += %s_len;' % (space, field.c_field_name))
                     code_lines.append('%s    xcb_tmp += %s_len;' % (space, field.c_field_name))
                 else:
-                    code_lines.append('%s    xcb_block_len += %s;' % (space, length))
+                    code_lines.append('%s    if (__builtin_add_overflow(xcb_block_len, %s, &xcb_block_len))' % (space, length))
+                    if context.endswith('checked'):
+                        code_lines.append('%s        return -1;' % (space,))
+                        _c_emit_bounds_check(code_lines, space, 'xcb_block_len')
+                    else:
+                        code_lines.append('%s        abort();' % (space,))
                     # increase pointer into the byte stream accordingly
-                    if context in ('unserialize', 'sizeof', 'unpack'):
+                    if context in ('unserialize', 'unserialize_checked', 'sizeof', 'unpack', 'unpack_checked', 'sizeof_checked'):
                         code_lines.append('%s    xcb_tmp += xcb_block_len;' % space)
 
         if 'serialize' == context:
@@ -1305,8 +1354,13 @@ def _c_serialize_helper(context, complex_type,
     # all other data types can be evaluated one field a time
     else:
         # unserialize & fixed size fields: simply cast the buffer to the respective xcb_out type
-        if context in ('unserialize', 'unpack', 'sizeof') and not self.c_var_followed_by_fixed_fields:
-            code_lines.append('%s    xcb_block_len += sizeof(%s);' % (space, self.c_type))
+        if context != 'serialize' and not self.c_var_followed_by_fixed_fields:
+            code_lines.append('%s    if (__builtin_add_overflow(xcb_block_len, sizeof(%s), &xcb_block_len))' % (space, self.c_type))
+            if context.endswith('checked'):
+                code_lines.append('%s        return -1;' % (space,))
+                _c_emit_bounds_check(code_lines, space, 'xcb_block_len')
+            else:
+                code_lines.append('%s        abort();' % (space,))
             code_lines.append('%s    xcb_tmp += xcb_block_len;' % space)
             code_lines.append('%s    xcb_buffer_len += xcb_block_len;' % space)
             code_lines.append('%s    xcb_block_len = 0;' % space)
@@ -1321,7 +1375,7 @@ def _c_serialize_helper(context, complex_type,
 
 def _c_serialize(context, self):
     """
-    depending on the context variable, generate _serialize(), _unserialize(), _unpack(), or _sizeof()
+    depending on the context variable, generate _serialize(), _unserialize(), _unpack(), _sizeof(), or _sizeof_checked()
     for the ComplexType variable self
     """
     _h_setlevel(1)
@@ -1331,13 +1385,16 @@ def _c_serialize(context, self):
     # _serialize() returns the buffer size
     _hc('int')
 
-    if self.is_switch and 'unserialize' == context:
-        context = 'unpack'
+    if self.is_switch and context.startswith('unserialize'):
+        context = context.replace('serialize', 'pack')
 
-    cases = { 'serialize'   : self.c_serialize_name,
-              'unserialize' : self.c_unserialize_name,
-              'unpack'      : self.c_unpack_name,
-              'sizeof'      : self.c_sizeof_name }
+    cases = { 'serialize'           : self.c_serialize_name,
+              'unserialize'         : self.c_unserialize_name,
+              'unserialize_checked' : self.c_unserialize_name + '_checked',
+              'unpack'              : self.c_unpack_name,
+              'unpack_checked'      : self.c_unpack_name + '_checked',
+              'sizeof'              : self.c_sizeof_name,
+              'sizeof_checked'      : self.c_sizeof_name + '_checked' }
     func_name = cases[context]
 
     param_fields, wire_fields, params = get_serialize_params(context, self)
@@ -1391,7 +1448,7 @@ def _c_serialize(context, self):
         prefix = [('_aux', '->', self)]
         aux_ptr = 'xcb_out'
 
-    elif context in ('unserialize', 'unpack'):
+    elif context in ('unserialize', 'unserialize_checked', 'unpack', 'unpack_checked'):
         _c('    char *xcb_tmp = (char *)_buffer;')
         if not self.is_switch:
             if not self.c_var_followed_by_fixed_fields:
@@ -1415,7 +1472,7 @@ def _c_serialize(context, self):
             _c('    unsigned int xcb_padding_offset = %d;',
                self.get_align_offset() )
 
-    elif 'sizeof' == context:
+    elif context in ('sizeof', 'sizeof_checked'):
         param_names = [p[2] for p in params]
         if self.length_expr is not None:
             _c('    const %s *_aux = (%s *)_buffer;', self.c_type, self.c_type)
@@ -1430,7 +1487,7 @@ def _c_serialize(context, self):
         if self.is_switch:
             # switch: call _unpack()
             _c('    %s _aux;', self.c_type)
-            _c('    return %s(%s, &_aux);', self.c_unpack_name, ", ".join(param_names))
+            _c('    return %s%s(%s, &_aux);', self.c_unpack_name, context[6:], ", ".join(param_names))
             _c('}')
             _c_pre.redirect_end()
             return
@@ -1445,6 +1502,8 @@ def _c_serialize(context, self):
             prefix = [('_aux', '->', self)]
             if self.is_switch:
                 _c('    unsigned int xcb_padding_offset = 0;')
+    else:
+        assert False, 'bad context %r' % context
 
     count = _c_serialize_helper(context, self, code_lines, temp_vars, prefix=prefix)
     # update variable size fields (only important for context=='serialize'
@@ -1457,7 +1516,7 @@ def _c_serialize(context, self):
         temp_vars.append('    unsigned int xcb_block_len = 0;')
         temp_vars.append('    unsigned int i;')
         temp_vars.append('    char *xcb_tmp;')
-    elif 'sizeof' == context:
+    elif context.startswith('sizeof'):
         # neither switch nor intermixed fixed and variable size fields:
         # evaluate parameters directly
         if not (self.is_switch or self.c_var_followed_by_fixed_fields):
@@ -1486,9 +1545,9 @@ def _c_serialize(context, self):
     # variable sized fields have been collected, now
     # allocate memory and copy everything into a continuous memory area
     # note: this is not necessary in case of unpack
-    if context in ('serialize', 'unserialize'):
+    if context in ('serialize', 'unserialize', 'unserialize_checked'):
         # unserialize: check for sizeof-only invocation
-        if 'unserialize' == context:
+        if context.startswith('unserialize'):
             _c('')
             _c('    if (NULL == _aux)')
             _c('        return xcb_buffer_len;')
@@ -1525,8 +1584,8 @@ def _c_serialize(context, self):
                 _c('    }')
 
         # unserialize: assign variable size fields individually
-        if 'unserialize' == context:
-            _c('    xcb_tmp = ((char *)*_aux)+xcb_buffer_len;')
+        if context.startswith('unserialize'):
+            _c('    xcb_tmp = ((const char *)*_aux)+xcb_buffer_len;')
             param_fields.reverse()
             for field in param_fields:
                 if not field.type.fixed_size():
@@ -1683,11 +1742,11 @@ def _c_accessor_get_expr(expr, field_mapping):
     '''
     lenexp = _c_accessor_get_length(expr, field_mapping)
 
-    if expr.op == '~':
+    if expr.op == '~': # SAFE
         return '(' + '~' + _c_accessor_get_expr(expr.rhs, field_mapping) + ')'
-    elif expr.op == 'popcount':
+    elif expr.op == 'popcount': # SAFE
         return 'xcb_popcount(' + _c_accessor_get_expr(expr.rhs, field_mapping) + ')'
-    elif expr.op == 'enumref':
+    elif expr.op == 'enumref': # SAFE
         enum_name = expr.lenfield_type.name
         constant_name = expr.lenfield_name
         c_name = _n(enum_name + (constant_name,)).upper()
@@ -2367,7 +2426,7 @@ def _c_request_helper(self, name, void, regular, aux=False, reply_fds=False):
             _c('    void *xcb_aux%d = 0;' % (idx))
     if list_with_var_size_elems:
         _c('    unsigned int xcb_tmp_len;')
-        _c('    char *xcb_tmp;')
+        _c('    const char *xcb_tmp;')
 
     num_fds_fixed = 0
     num_fds_expr = []
