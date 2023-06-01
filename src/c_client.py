@@ -1556,6 +1556,8 @@ def _c_serialize(context, self):
         _c('    if (NULL == %s) {', aux_ptr)
         _c('        /* allocate memory */')
         _c('        %s = malloc(xcb_buffer_len);', aux_ptr)
+        _c('        if (%s == NULL)', aux_ptr)
+        _c('            return -1;')
         if 'serialize' == context:
             _c('        *_buffer = xcb_out;')
         _c('    }')
