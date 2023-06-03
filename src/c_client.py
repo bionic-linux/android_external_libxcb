@@ -881,7 +881,7 @@ def _c_serialize_helper_switch(context, self, complex_name,
                                code_lines, temp_vars,
                                space, prefix):
     count = 0
-    switch_expr = _c_accessor_get_expr(self.expr, None, False)
+    switch_expr = _c_accessor_get_expr(self.expr, None, context.endswith('checked'))
 
     for b in self.bitcases:
         len_expr = len(b.type.expr)
@@ -893,7 +893,7 @@ def _c_serialize_helper_switch(context, self, complex_name,
             compare_operator = '&'
 
         for n, expr in enumerate(b.type.expr):
-            bitcase_expr = _c_accessor_get_expr(expr, None, False)
+            bitcase_expr = _c_accessor_get_expr(expr, None, context.endswith('checked'))
             # only one <enumref> in the <bitcase>
             if len_expr == 1:
                 code_lines.append(
@@ -1029,7 +1029,7 @@ def _c_serialize_helper_list_field(context, self, field,
     if expr.op == 'calculate_len':
         list_length = field.type.expr.lenfield_name
     else:
-        list_length = _c_accessor_get_expr(expr, field_mapping, False)
+        list_length = _c_accessor_get_expr(expr, field_mapping, context.endswith('checked'))
 
     # default: list with fixed size elements
     length = 'xcb_checked_mul(%s, sizeof(%s))' % (list_length, field.type.member.c_wiretype)
@@ -1367,7 +1367,7 @@ def _c_serialize_helper(context, complex_type,
 
         count += _c_serialize_helper_fields(context, self,
                                             code_lines, temp_vars,
-                                            space, prefix, False)
+                                            space, prefix, context.endswith('checked'))
     # "final padding"
     count += _c_serialize_helper_insert_padding(context, complex_type, code_lines, space, False, self.is_switch)
 
@@ -1743,7 +1743,6 @@ def _c_accessor_get_expr(expr, field_mapping, checked):
     Otherwise, uses the value of the length field.
     '''
     lenexp = _c_accessor_get_length(expr, field_mapping)
-
     if expr.op == '~': # SAFE
         return '(' + '~' + _c_accessor_get_expr(expr.rhs, field_mapping, checked) + ')'
     elif expr.op == 'popcount': # SAFE
@@ -1822,9 +1821,39 @@ def _c_accessor_get_expr(expr, field_mapping, checked):
     elif expr.op == 'listelement-ref':
         return '(*xcb_listelement)'
     elif expr.op != None and expr.op != 'calculate_len':
-        return ('(' + _c_accessor_get_expr(expr.lhs, field_mapping, checked) +
-                ' ' + expr.op + ' ' +
-                _c_accessor_get_expr(expr.rhs, field_mapping, checked) + ')')
+        _c_pre.start()
+        sumvar = _c_pre.get_tempvarname()
+        match expr.op:
+            case '+':
+                op = 'add'
+            case '-':
+                op = 'sub'
+            case '*':
+                op = 'mul'
+            case '/':
+                _c_pre.tempvar("int64_t %s;", sumvar)
+                _c_pre.code("%s = (%s);",
+                            sumvar,
+                            _c_accessor_get_expr(expr.rhs, field_mapping, checked))
+                _c_pre.code("if (%s < 1)", sumvar)
+                _c_pre.code("    return -1;" if checked else "    abort();")
+                _c_pre.end()
+                return ('((' + _c_accessor_get_expr(expr.lhs, field_mapping, checked) + ') / ' + sumvar + ')')
+            case '&':
+                _c_pre.end()
+                return ('(' + _c_accessor_get_expr(expr.lhs, field_mapping, checked) +
+                        ' & ' + _c_accessor_get_expr(expr.rhs, field_mapping, checked) + ')')
+            case _:
+                assert False
+        _c_pre.tempvar("int64_t %s; /* sum */", sumvar)
+        _c_pre.code("if (__builtin_%s_overflow((%s), (%s), &%s))",
+                    op,
+                    _c_accessor_get_expr(expr.lhs, field_mapping, checked),
+                    _c_accessor_get_expr(expr.rhs, field_mapping, checked),
+                    sumvar)
+        _c_pre.code("    return -1;" if checked else "    abort();")
+        _c_pre.end()
+        return ('(' + sumvar + ')')
     elif expr.bitfield:
         return 'xcb_popcount(' + lenexp + ')'
     else:
@@ -2137,10 +2166,9 @@ def _c_accessors(self, name, base):
     '''
     # no accessors for switch itself -
     # switch always needs to be unpacked explicitly
-#    if self.is_switch:
-#        pass
-#    else:
-    if True:
+    if self.is_switch:
+        assert False
+    else:
         for field in self.fields:
             if not field.type.is_pad:
                 if _c_field_needs_list_accessor(field):

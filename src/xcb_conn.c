@@ -30,9 +30,7 @@
 #endif
 
 #include <assert.h>
-#if __STDC_VERSION__ >= 201112L
 #include <stdalign.h>
-#endif
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -241,12 +239,16 @@ static int read_setup(xcb_connection_t *c)
              * Padded length of the vendor string.  setup->vendor_len is a
              * uint16_t so overflow is impossible.  Cannot exceed 65536.
              */
+            static_assert(sizeof(setup->vendor_len) == 2,
+                          "wrong size of setup->vendor_len");
             uint32_t const pixmap_offset = (setup->vendor_len + UINT32_C(3)) & ~UINT32_C(3);
 
             /*
              * Length of the pixmap formats.  setup->pixmap_formats_len is
              * uint8_t so overflow is impossible.
              */
+            static_assert(sizeof(setup->pixmap_formats_len) == 1,
+                          "wrong size of setup->pixmap_formats_len");
             uint32_t const pixmap_formats_len = sizeof(xcb_format_t) * setup->pixmap_formats_len;
 
             /* Offset of the screens.  Max RHS = 40 + 65536 + 8 * 255 = 67616 so no risk of overflow */
@@ -255,20 +257,24 @@ static int read_setup(xcb_connection_t *c)
             /* 4 zero bytes, for memcmp() */
             uint32_t const zero = 0;
 
-#if __STDC_VERSION__ >= 201112L
             /* A bunch of static assertions */
-            static_assert(sizeof(xcb_screen_t) == 40, "bug");
-            static_assert(sizeof(xcb_setup_t) == 40, "bug");
-            static_assert(sizeof(xcb_setup_generic_t) == 8, "bug");
-            static_assert(sizeof(xcb_setup_authenticate_t) == 8, "bug");
-            static_assert(sizeof(xcb_setup_failed_t) == 8, "bug");
-            static_assert(sizeof(xcb_visualtype_t) == 24, "bug");
-            static_assert(sizeof(xcb_depth_t) == 8, "bug");
-            static_assert(sizeof(xcb_format_t) == 8, "bug");
-            static_assert(alignof(xcb_screen_t) == 4, "bug");
-            static_assert(alignof(xcb_visualtype_t) == 4, "bug");
-            static_assert(alignof(xcb_depth_t) == 2, "bug");
-#endif
+#define ASSERT_SIZE_ALIGN(t, size, align)               \
+    do {                                                \
+        static_assert(sizeof(t) == size,                \
+                      "unexpected size of" #t);         \
+        static_assert(alignof(t) == align,              \
+                      "unexpected alignment of" #t);    \
+    } while (0);
+            ASSERT_SIZE_ALIGN(xcb_screen_t, 40, 4);
+            ASSERT_SIZE_ALIGN(xcb_setup_t, 40, 4);
+            ASSERT_SIZE_ALIGN(xcb_setup_generic_t, 8, 2);
+            ASSERT_SIZE_ALIGN(xcb_setup_authenticate_t, 8, 2);
+            ASSERT_SIZE_ALIGN(xcb_setup_failed_t, 8, 2);
+            ASSERT_SIZE_ALIGN(xcb_visualtype_t, 24, 4);
+            ASSERT_SIZE_ALIGN(xcb_depth_t, 8, 2);
+            ASSERT_SIZE_ALIGN(xcb_format_t, 8, 1);
+#undef ASSERT_SIZE_ALIGN
+
             /* Must have at least 1 screen and 1 pixmap format */
             if (setup->roots_len < 1 || setup->pixmap_formats_len < 1)
                 return 0;
@@ -348,6 +354,8 @@ static int read_setup(xcb_connection_t *c)
                         return 0;
 
                     /* depth->visuals_len is uint16_t so overflow is impossible. */
+                    static_assert(sizeof(depth->visuals_len) == 2,
+                                  "wrong size of setup->visuals_len");
                     visuals_size = (uint32_t)depth->visuals_len * sizeof(*visuals);
 
                     /* Visuals must fit in the buffer. */
