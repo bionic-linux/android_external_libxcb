@@ -113,6 +113,7 @@ class PreCode(object):
 
 
     def output_tempvars(self):
+        assert False
         if self.redirect_code == None:
             _c_wr_stringlist('', self.tempvars)
             self.tempvars = []
@@ -881,7 +882,7 @@ def _c_serialize_helper_switch(context, self, complex_name,
                                code_lines, temp_vars,
                                space, prefix):
     count = 0
-    switch_expr = _c_accessor_get_expr(self.expr, None, context.endswith('checked'))
+    switch_expr = _c_accessor_get_expr(self.expr, None, checked=context.endswith("checked"))
 
     for b in self.bitcases:
         len_expr = len(b.type.expr)
@@ -893,7 +894,7 @@ def _c_serialize_helper_switch(context, self, complex_name,
             compare_operator = '&'
 
         for n, expr in enumerate(b.type.expr):
-            bitcase_expr = _c_accessor_get_expr(expr, None, context.endswith('checked'))
+            bitcase_expr = _c_accessor_get_expr(expr, None, checked=context.endswith("checked"))
             # only one <enumref> in the <bitcase>
             if len_expr == 1:
                 code_lines.append(
@@ -1029,7 +1030,7 @@ def _c_serialize_helper_list_field(context, self, field,
     if expr.op == 'calculate_len':
         list_length = field.type.expr.lenfield_name
     else:
-        list_length = _c_accessor_get_expr(expr, field_mapping, context.endswith('checked'))
+        list_length = _c_accessor_get_expr(expr, field_mapping, checked=context.endswith("checked"))
 
     # default: list with fixed size elements
     length = 'xcb_checked_mul(%s, sizeof(%s))' % (list_length, field.type.member.c_wiretype)
@@ -1367,7 +1368,7 @@ def _c_serialize_helper(context, complex_type,
 
         count += _c_serialize_helper_fields(context, self,
                                             code_lines, temp_vars,
-                                            space, prefix, context.endswith('checked'))
+                                            space, prefix, False)
     # "final padding"
     count += _c_serialize_helper_insert_padding(context, complex_type, code_lines, space, False, self.is_switch)
 
@@ -1477,10 +1478,15 @@ def _c_serialize(context, self):
         if self.length_expr is not None:
             _c('    const %s *_aux = (%s *)_buffer;', self.c_type, self.c_type)
             prefix = [('_aux', '->', self)]
-
             field_mapping = _c_get_field_mapping_for_expr(self, self.length_expr, prefix)
-
-            _c('    return %s;', _c_accessor_get_expr(self.length_expr, field_mapping, context.endswith('checked')))
+            v = _c_accessor_get_expr(self.length_expr, field_mapping, checked=context.endswith('checked'))
+            _c('')
+            for t in temp_vars:
+                _c(t)
+            _c('')
+            for l in code_lines:
+                _c(l)
+            _c('    return %s;', v)
             _c('}')
             _c_pre.redirect_end()
             return
@@ -1734,7 +1740,7 @@ def _c_accessor_get_length(expr, field_mapping=None):
     else:
         return str(expr.nmemb)
 
-def _c_accessor_get_expr(expr, field_mapping, checked):
+def _c_accessor_get_expr(expr, field_mapping, *, checked):
     '''
     Figures out what C code is needed to get the length of a list field.
     The field_mapping parameter can be used to change the absolute name of a length field.
@@ -1743,10 +1749,11 @@ def _c_accessor_get_expr(expr, field_mapping, checked):
     Otherwise, uses the value of the length field.
     '''
     lenexp = _c_accessor_get_length(expr, field_mapping)
+
     if expr.op == '~': # SAFE
-        return '(' + '~' + _c_accessor_get_expr(expr.rhs, field_mapping, checked) + ')'
+        return '(' + '~' + _c_accessor_get_expr(expr.rhs, field_mapping, checked=checked) + ')'
     elif expr.op == 'popcount': # SAFE
-        return 'xcb_popcount(' + _c_accessor_get_expr(expr.rhs, field_mapping, checked) + ')'
+        return 'xcb_popcount(' + _c_accessor_get_expr(expr.rhs, field_mapping, checked=checked) + ')'
     elif expr.op == 'enumref': # SAFE
         enum_name = expr.lenfield_type.name
         constant_name = expr.lenfield_name
@@ -1757,7 +1764,7 @@ def _c_accessor_get_expr(expr, field_mapping, checked):
         field = expr.lenfield
         list_name = field_mapping[field.c_field_name][0]
         c_length_func = "%s(%s)" % (field.c_length_name, list_name)
-        c_length_func = _c_accessor_get_expr(field.type.expr, field_mapping, checked)
+        c_length_func = _c_accessor_get_expr(field.type.expr, field_mapping, checked=checked)
         # create explicit code for computing the sum.
         # This works for all C-types which can be added to int64_t with +=
         _c_pre.start()
@@ -1802,12 +1809,13 @@ def _c_accessor_get_expr(expr, field_mapping, checked):
             # cause pre-code of the subexpression be added right here
             _c_pre.end()
             # compute the subexpression
-            rhs_expr_str = _c_accessor_get_expr(expr.rhs, scoped_field_mapping, checked)
+            rhs_expr_str = _c_accessor_get_expr(expr.rhs, scoped_field_mapping, checked=checked)
             # resume with our code
             _c_pre.start()
             # output the summation expression
             if checked:
                 _c_pre.code("if (__builtin_add_overflow(%s, %s, &%s))", sumvar, rhs_expr_str, sumvar)
+                _c_pre.code("    /* SUMOF */")
                 _c_pre.code("    return -1;")
             else:
                 _c_pre.code("%s += %s;", sumvar, rhs_expr_str)
@@ -1834,22 +1842,22 @@ def _c_accessor_get_expr(expr, field_mapping, checked):
                 _c_pre.tempvar("int64_t %s;", sumvar)
                 _c_pre.code("%s = (%s);",
                             sumvar,
-                            _c_accessor_get_expr(expr.rhs, field_mapping, checked))
+                            _c_accessor_get_expr(expr.rhs, field_mapping, checked=checked))
                 _c_pre.code("if (%s < 1)", sumvar)
                 _c_pre.code("    return -1;" if checked else "    abort();")
                 _c_pre.end()
-                return ('((' + _c_accessor_get_expr(expr.lhs, field_mapping, checked) + ') / ' + sumvar + ')')
+                return ('((' + _c_accessor_get_expr(expr.lhs, field_mapping, checked=checked) + ') / ' + sumvar + ')')
             case '&':
                 _c_pre.end()
-                return ('(' + _c_accessor_get_expr(expr.lhs, field_mapping, checked) +
-                        ' & ' + _c_accessor_get_expr(expr.rhs, field_mapping, checked) + ')')
+                return ('(' + _c_accessor_get_expr(expr.lhs, field_mapping, checked=checked) +
+                        ' & ' + _c_accessor_get_expr(expr.rhs, field_mapping, checked=checked) + ')')
             case _:
                 assert False
         _c_pre.tempvar("int64_t %s; /* sum */", sumvar)
         _c_pre.code("if (__builtin_%s_overflow((%s), (%s), &%s))",
                     op,
-                    _c_accessor_get_expr(expr.lhs, field_mapping, checked),
-                    _c_accessor_get_expr(expr.rhs, field_mapping, checked),
+                    _c_accessor_get_expr(expr.lhs, field_mapping, checked=checked),
+                    _c_accessor_get_expr(expr.rhs, field_mapping, checked=checked),
                     sumvar)
         _c_pre.code("    return -1;" if checked else "    abort();")
         _c_pre.end()
@@ -2065,7 +2073,7 @@ def _c_accessors_list(self, field):
                     (field.c_field_name)
                 );
         else:
-            return _c_accessor_get_expr(field.type.expr, fields, False)
+            return _c_accessor_get_expr(field.type.expr, fields, checked=False)
 
     _c('    return %s;', get_length())
     _c('}')
@@ -2166,9 +2174,10 @@ def _c_accessors(self, name, base):
     '''
     # no accessors for switch itself -
     # switch always needs to be unpacked explicitly
-    if self.is_switch:
-        assert False
-    else:
+#    if self.is_switch:
+#        pass
+#    else:
+    if True:
         for field in self.fields:
             if not field.type.is_pad:
                 if _c_field_needs_list_accessor(field):
@@ -2469,7 +2478,7 @@ def _c_request_helper(self, name, void, regular, aux=False, reply_fds=False):
             if not field.type.is_list:
                 num_fds_fixed += 1
             else:
-                num_fds_expr.append(_c_accessor_get_expr(field.type.expr, None, True))
+                num_fds_expr.append(_c_accessor_get_expr(field.type.expr, None, checked=True))
 
     if list_with_var_size_elems or len(num_fds_expr) > 0:
         _c('    unsigned int i;')
@@ -2489,7 +2498,7 @@ def _c_request_helper(self, name, void, regular, aux=False, reply_fds=False):
     for field in wire_fields:
         if field.type.fixed_size():
             if field.type.is_expr:
-                _c('    xcb_out.%s = %s;', field.c_field_name, _c_accessor_get_expr(field.type.expr, None, True))
+                _c('    xcb_out.%s = %s;', field.c_field_name, _c_accessor_get_expr(field.type.expr, None, checked=True))
             elif field.type.is_pad:
                 if field.type.nmemb == 1:
                     _c('    xcb_out.%s = 0;', field.c_field_name)
@@ -2530,12 +2539,12 @@ def _c_request_helper(self, name, void, regular, aux=False, reply_fds=False):
                             if field.type.expr.op == 'calculate_len':
                                 lenfield = field.type.expr.lenfield_name
                             else:
-                                lenfield = _c_accessor_get_expr(field.type.expr, None, False)
+                                lenfield = _c_accessor_get_expr(field.type.expr, None, checked=False)
 
                             _c('    xcb_parts[%d].iov_len = %s * sizeof(%s);', count, lenfield,
                                         field.type.member.c_wiretype)
                         else:
-                            list_length = _c_accessor_get_expr(field.type.expr, None, False)
+                            list_length = _c_accessor_get_expr(field.type.expr, None, checked=False)
                             length = ''
 
                             _c("    xcb_parts[%d].iov_len = 0;" % count)
@@ -2593,7 +2602,7 @@ def _c_request_helper(self, name, void, regular, aux=False, reply_fds=False):
             if not field.type.is_list:
                 _c('    fds[fd_index++] = %s;', field.c_field_name)
             else:
-                _c('    for (i = 0; i < %s; i++)', _c_accessor_get_expr(field.type.expr, None, False))
+                _c('    for (i = 0; i < %s; i++)', _c_accessor_get_expr(field.type.expr, None, checked=False))
                 _c('        fds[fd_index++] = %s[i];', field.c_field_name)
 
     if not num_fds:
@@ -2659,35 +2668,37 @@ def _c_reply(self, name):
     _h('%sxcb_generic_error_t%s **e);', spacing3, spacing2)
     _c('%sxcb_generic_error_t%s **e)', spacing3, spacing2)
     _c('{')
-
-    if len(unserialize_fields)>0:
-        # certain variable size fields need to be unserialized explicitly
+    if not self.reply.fixed_size:
         _c('    %s *reply = (%s *) xcb_wait_for_reply_safe(c, cookie.sequence, e, sizeof (*reply));',
            self.c_reply_type, self.c_reply_type)
         _c('    if (!reply)')
         _c('        return NULL;')
-        _c('    int i;')
-
-        for field in unserialize_fields:
-            if field.type.is_list:
-                _c('    %s %s_iter = %s(reply);', field.c_iterator_type, field.c_field_name, field.c_iterator_name)
-                _c('    int %s_len = %s(reply);', field.c_field_name, field.c_length_name)
-                _c('    %s *%s_data;', field.c_field_type, field.c_field_name)
-            else:
-                raise Exception('not implemented: call _unserialize() in reply for non-list type %s', field.c_field_type)
-        # call _unserialize(), using the reply as source and target buffer
-        _c('    /* special cases: transform parts of the reply to match XCB data structures */')
-        for field in unserialize_fields:
-            if field.type.is_list:
-                _c('    for(i=0; i<%s_len; i++) {', field.c_field_name)
-                _c('        %s_data = %s_iter.data;', field.c_field_name, field.c_field_name)
-                _c('        %s((const void *)%s_data, &%s_data);', field.type.c_unserialize_name,
-                   field.c_field_name, field.c_field_name)
-                _c('        %s(&%s_iter);', field.type.c_next_name, field.c_field_name)
-                _c('    }')
-        # return the transformed reply
+        _c('    if (%s_checked(reply) < 0) {', self.c_sizeof_name)
+        _c('        free(reply);')
+        _c('        return NULL;')
+        _c('    }')
+        if len(unserialize_fields)>0:
+            # certain variable size fields need to be unserialized explicitly
+            _c('    int i;')
+            for field in unserialize_fields:
+                if field.type.is_list:
+                    _c('    %s %s_iter = %s(reply);', field.c_iterator_type, field.c_field_name, field.c_iterator_name)
+                    _c('    int %s_len = %s(reply);', field.c_field_name, field.c_length_name)
+                    _c('    %s *%s_data;', field.c_field_type, field.c_field_name)
+                else:
+                    raise Exception('not implemented: call _unserialize() in reply for non-list type %s', field.c_field_type)
+            # call _unserialize(), using the reply as source and target buffer
+            _c('    /* special cases: transform parts of the reply to match XCB data structures */')
+            for field in unserialize_fields:
+                if field.type.is_list:
+                    _c('    for(i=0; i<%s_len; i++) {', field.c_field_name)
+                    _c('        %s_data = %s_iter.data;', field.c_field_name, field.c_field_name)
+                    _c('        %s((const void *)%s_data, &%s_data);', field.type.c_unserialize_name,
+                       field.c_field_name, field.c_field_name)
+                    _c('        %s(&%s_iter);', field.type.c_next_name, field.c_field_name)
+                    _c('    }')
+            # return the transformed reply
         _c('    return reply;')
-
     else:
         _c('    return (%s *) xcb_wait_for_reply_safe(c, cookie.sequence, e, sizeof (%s));', self.c_reply_type, self.c_reply_type)
 
