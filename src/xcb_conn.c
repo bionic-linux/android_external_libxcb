@@ -170,6 +170,20 @@ static int write_setup(xcb_connection_t *c, xcb_auth_info_t *auth_info)
     return ret;
 }
 
+/* A bunch of static assertions */
+#define ASSERT_SIZE_ALIGN(t, size, align)                               \
+    static_assert(sizeof(t) == size, "unexpected size of" #t);          \
+    static_assert(alignof(t) == align, "unexpected alignment of" #t);
+ASSERT_SIZE_ALIGN(xcb_screen_t, 40, 4);
+ASSERT_SIZE_ALIGN(xcb_setup_t, 40, 4);
+ASSERT_SIZE_ALIGN(xcb_setup_generic_t, 8, 2);
+ASSERT_SIZE_ALIGN(xcb_setup_authenticate_t, 8, 2);
+ASSERT_SIZE_ALIGN(xcb_setup_failed_t, 8, 2);
+ASSERT_SIZE_ALIGN(xcb_visualtype_t, 24, 4);
+ASSERT_SIZE_ALIGN(xcb_depth_t, 8, 2);
+ASSERT_SIZE_ALIGN(xcb_format_t, 8, 1);
+#undef ASSERT_SIZE_ALIGN
+
 static int read_setup(xcb_connection_t *c)
 {
     uint32_t extra_bytes, total_bytes;
@@ -225,59 +239,37 @@ static int read_setup(xcb_connection_t *c)
             return 0;
         }
     case 1: /* success */
-        if (total_bytes < sizeof(xcb_setup_t) + sizeof(xcb_screen_t) + sizeof(xcb_format_t))
-            return 0; /* not enough bytes sent, no screens, or no formats */
-        else
         {
-            size_t i, j;
-            const uint8_t *cursor = (const uint8_t *)c->setup,
-                          *const end = cursor + total_bytes;
-            xcb_setup_t *const setup = (xcb_setup_t *) c->setup;
+            const uint8_t *cursor = (const uint8_t *)c->setup;
+            const uint8_t *end = cursor + total_bytes;
+            xcb_setup_t *const setup = (xcb_setup_t *)cursor;
             const xcb_format_t *formats;
+            uint32_t pixmap_offset, pixmap_formats_len;
+            size_t i, j;
 
-            /*
-             * Padded length of the vendor string.  setup->vendor_len is a
-             * uint16_t so overflow is impossible.  Cannot exceed 65536.
-             */
+            if (total_bytes < sizeof(xcb_setup_t) + sizeof(xcb_screen_t) +
+                              sizeof(xcb_format_t))
+                return 0; /* not enough bytes sent, no screens, or no formats */
+
+            if (setup->roots_len < 1 || setup->pixmap_formats_len < 1)
+                return 0; /* no screens or no formats */
+
+            /* Offset of the pixmaps. Cannot exceed 65576. */
             static_assert(sizeof(setup->vendor_len) == 2,
                           "wrong size of setup->vendor_len");
-            uint32_t const pixmap_offset = (setup->vendor_len + UINT32_C(3)) & ~UINT32_C(3);
+            pixmap_offset = (sizeof(*setup) + (uint32_t)setup->vendor_len + 3) & ~3;
 
-            /*
-             * Length of the pixmap formats.  setup->pixmap_formats_len is
-             * uint8_t so overflow is impossible.
-             */
+            /* Length of the pixmap formats. Cannot exceed 2040. */
             static_assert(sizeof(setup->pixmap_formats_len) == 1,
                           "wrong size of setup->pixmap_formats_len");
-            uint32_t const pixmap_formats_len = sizeof(xcb_format_t) * setup->pixmap_formats_len;
+            pixmap_formats_len = sizeof(xcb_format_t) * (uint32_t)setup->pixmap_formats_len;
 
-            /* Offset of the screens.  Max RHS = 40 + 65536 + 8 * 255 = 67616 so no risk of overflow */
-            uint32_t const screen_offset = sizeof(xcb_setup_t) + pixmap_offset + pixmap_formats_len;
+            /* Offset of the screens.  Max RHS = 65576 + 2040 = 67616
+             * so no risk of overflow */
+            uint32_t const screen_offset = pixmap_offset + pixmap_formats_len;
 
             /* 4 zero bytes, for memcmp() */
             uint32_t const zero = 0;
-
-            /* A bunch of static assertions */
-#define ASSERT_SIZE_ALIGN(t, size, align)               \
-    do {                                                \
-        static_assert(sizeof(t) == size,                \
-                      "unexpected size of" #t);         \
-        static_assert(alignof(t) == align,              \
-                      "unexpected alignment of" #t);    \
-    } while (0);
-            ASSERT_SIZE_ALIGN(xcb_screen_t, 40, 4);
-            ASSERT_SIZE_ALIGN(xcb_setup_t, 40, 4);
-            ASSERT_SIZE_ALIGN(xcb_setup_generic_t, 8, 2);
-            ASSERT_SIZE_ALIGN(xcb_setup_authenticate_t, 8, 2);
-            ASSERT_SIZE_ALIGN(xcb_setup_failed_t, 8, 2);
-            ASSERT_SIZE_ALIGN(xcb_visualtype_t, 24, 4);
-            ASSERT_SIZE_ALIGN(xcb_depth_t, 8, 2);
-            ASSERT_SIZE_ALIGN(xcb_format_t, 8, 1);
-#undef ASSERT_SIZE_ALIGN
-
-            /* Must have at least 1 screen and 1 pixmap format */
-            if (setup->roots_len < 1 || setup->pixmap_formats_len < 1)
-                return 0;
 
             /* First screen must fit in the data sent. */
             if (total_bytes < screen_offset + sizeof(xcb_screen_t))
@@ -306,7 +298,7 @@ static int read_setup(xcb_connection_t *c)
              * and c->setup was allocated by malloc().  cursor is kept 4-byte
              * aligned at all times.
              */
-            cursor = (const uint8_t *)setup + screen_offset;
+            cursor += screen_offset;
 
             /* Validate each screen. */
             for (i = 0; i < setup->roots_len; ++i) {
@@ -319,7 +311,7 @@ static int read_setup(xcb_connection_t *c)
                  * visual type.
                  */
                 if ((end - cursor) <
-                    (sizeof(*screen) + sizeof(*depth) + sizeof(*visuals)))
+                    (ptrdiff_t)(sizeof(*screen) + sizeof(*depth) + sizeof(*visuals)))
                     return 0;
 
                 screen = (const struct xcb_screen_t *)cursor;
@@ -330,10 +322,8 @@ static int read_setup(xcb_connection_t *c)
                     return 0;
 
                 for (j = 0; j < screen->allowed_depths_len; ++j) {
-                    uint32_t visuals_size, k;
-
                     /* Depth must fit in the buffer with room for a visual type. */
-                    if ((end - cursor) < (sizeof(*depth) + sizeof(*visuals)))
+                    if ((end - cursor) < (ptrdiff_t)(sizeof(*depth) + sizeof(*visuals)))
                         return 0;
 
                     /*
@@ -341,8 +331,8 @@ static int read_setup(xcb_connection_t *c)
                      * alignment (4) than xcb_depth_t (2).  sizeof(xcb_depth_t)
                      * is a multiple of 4 so alignment will be maintained.
                      */
-                    depth = (const struct xcb_depth_t *)cursor;
-                    cursor += sizeof(*depth);
+                    depth = (const xcb_depth_t *)cursor;
+                    visuals = (const xcb_visualtype_t *)(depth + 1);
 
                     /* Padding must be zero */
                     if ((depth->pad0 != 0) ||
@@ -356,26 +346,22 @@ static int read_setup(xcb_connection_t *c)
                     /* depth->visuals_len is uint16_t so overflow is impossible. */
                     static_assert(sizeof(depth->visuals_len) == 2,
                                   "wrong size of setup->visuals_len");
-                    visuals_size = (uint32_t)depth->visuals_len * sizeof(*visuals);
 
                     /* Visuals must fit in the buffer. */
-                    if ((size_t)(end - cursor) < visuals_size)
+                    if ((size_t)(end - (const uint8_t *)visuals) <
+                        (uint32_t)depth->visuals_len * sizeof(*visuals))
                         return 0;
-
-                    /* Cursor is 4-byte aligned, which is sufficient. */
-                    visuals = (const xcb_visualtype_t *)cursor;
-
-                    for (k = 0; k < depth->visuals_len; ++k) {
+                    cursor = (const uint8_t *)(visuals + depth->visuals_len);
+                    while ((const uint8_t *)visuals < cursor) {
                         /* Padding must be zero. */
-                        if (memcmp(visuals[k].pad0, &zero, 4))
+                        if (memcmp(visuals->pad0, &zero, 4))
                             return 0;
 
                         /* Bits per RGB value must not be zero. */
-                        if (visuals[k].bits_per_rgb_value < 1)
+                        if (visuals->bits_per_rgb_value < 1)
                             return 0;
+                        visuals++;
                     }
-
-                    cursor += visuals_size;
                 }
             }
             if (end != cursor)
