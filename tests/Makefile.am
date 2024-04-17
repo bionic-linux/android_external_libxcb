@@ -10,7 +10,7 @@ LDADD = @CHECK_LIBS@ $(top_builddir)/src/libxcb.la
 if HAVE_CHECK
 TESTS = check_all
 check_PROGRAMS = check_all
-check_all_SOURCES =  check_all.c check_suites.h check_public.c
+check_all_SOURCES =  check_all.c check_suites.h check_public.c check_integration.c
 
 check-local: check-TESTS
 	$(RM) CheckLog.html
