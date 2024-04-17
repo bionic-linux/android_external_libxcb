@@ -341,6 +341,13 @@ xcb_generic_event_t *xcb_poll_for_special_event(xcb_connection_t *c,
  */
 xcb_generic_event_t *xcb_wait_for_special_event(xcb_connection_t *c,
                                                 xcb_special_event_t *se);
+
+/**
+ * @brief Returns the next event from a special queue, blocking until one arrives
+ */
+xcb_generic_event_t *xcb_wait_for_special_event_with_timeout(xcb_connection_t *c,
+                                                             xcb_special_event_t *se,
+                                                             unsigned int millisecs_timeout);
 /**
  * @typedef typedef struct xcb_extension_t xcb_extension_t
  */
