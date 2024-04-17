@@ -1954,7 +1954,7 @@ def _c_accessors_list(self, field):
                     # the list is directly after the fixed size part of the
                     # request: simply subtract the size of the fixed-size part
                     # from the request size and divide that by the member size
-                    return '(((R->length * 4) - sizeof('+ self.c_type + '))/'+'sizeof('+field.type.member.c_wiretype+'))'
+                    return '(((R->length * 4) + 32 - sizeof('+ self.c_type + '))/'+'sizeof('+field.type.member.c_wiretype+'))'
                 else:
                     # use the accessor to get the start of the list, then
                     # compute the length of it by subtracting it from
