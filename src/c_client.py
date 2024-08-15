@@ -2336,13 +2336,14 @@ def _c_request_helper(self, name, void, regular, aux=False, reply_fds=False):
            spacing, c_pointer, field.c_field_name, comma)
 
     count = 2
+    need_end_pad = False
     if not self.c_var_followed_by_fixed_fields:
-        for field in param_fields:
+        for field in self.fields:
             if not field.type.fixed_size() and field.wire:
-                count = count + 2
-                if field.type.c_need_serialize or field.type.c_need_sizeof:
-                    # _serialize() keeps track of padding automatically
-                    count -= 1
+                count += 1
+                need_end_pad = True
+    if need_end_pad:
+        count += 1
     dimension = count + 2
 
     _c('{')
@@ -2426,11 +2427,14 @@ def _c_request_helper(self, name, void, regular, aux=False, reply_fds=False):
 
         count = 4
 
-        for field in param_fields:
+        for field in self.fields:
             if field.wire and not field.type.fixed_size():
                 _c('    /* %s %s */', field.type.c_type, field.c_field_name)
-                # default: simple cast to char *
-                if not field.type.c_need_serialize and not field.type.c_need_sizeof:
+                if field.type.is_pad and field.type.align > 1:
+                    _c('    xcb_parts[%d].iov_base = 0;', count)
+                    _c('    xcb_parts[%d].iov_len = -xcb_parts[%d].iov_len & %d;', count, count-1, field.type.align-1)
+                elif not field.type.c_need_serialize and not field.type.c_need_sizeof:
+                    # default: simple cast to char *
                     _c('    xcb_parts[%d].iov_base = (char *) %s;', count, field.c_field_name)
                     if field.type.is_list:
                         if field.type.member.fixed_size():
@@ -2474,11 +2478,15 @@ def _c_request_helper(self, name, void, regular, aux=False, reply_fds=False):
                         _c('      %s (%s);', func_name, serialize_args)
 
                 count += 1
-                if not (field.type.c_need_serialize or field.type.c_need_sizeof):
-                    # the _serialize() function keeps track of padding automatically
-                    _c('    xcb_parts[%d].iov_base = 0;', count)
-                    _c('    xcb_parts[%d].iov_len = -xcb_parts[%d].iov_len & 3;', count, count-1)
-                    count += 1
+        if need_end_pad:
+            _c('    xcb_parts[%d].iov_base = 0;', count)
+            if count == 5:
+                _c('    xcb_parts[%d].iov_len = -xcb_parts[4].iov_len & 3;', count)
+            else:
+                parts = []
+                for part in range(4, count):
+                    parts.append("xcb_parts[%d].iov_len" % part)
+                _c('    xcb_parts[%d].iov_len = -(%s) & 3;', count, ' + '.join(parts))
 
     # elif self.c_var_followed_by_fixed_fields:
     else:
