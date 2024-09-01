@@ -8,4 +8,4 @@ Description: XCB Double Buffer Extension
 Version: @PACKAGE_VERSION@
 Requires.private: xcb
 Libs: -L${libdir} -lxcb-dbe
-Cflags: -I${includedir}
+Cflags: -I${includedir} @XCB_CFLAGS@

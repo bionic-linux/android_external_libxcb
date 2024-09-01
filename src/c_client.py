@@ -113,6 +113,7 @@ class PreCode(object):
 
 
     def output_tempvars(self):
+        assert False
         if self.redirect_code == None:
             _c_wr_stringlist('', self.tempvars)
             self.tempvars = []
@@ -278,9 +279,10 @@ def c_open(self):
     _h('#include "xcb.h"')
 
     _c('#ifdef HAVE_CONFIG_H')
-    _c('#include "config.h"')
+    _hc('#include "config.h"')
     _c('#endif')
     _c('#include <stdlib.h>')
+    _c('#include <stdalign.h>')
     _c('#include <string.h>')
     _c('#include <assert.h>')
     _c('#include <stddef.h>  /* for offsetof() */')
@@ -288,7 +290,6 @@ def c_open(self):
     _c('#include "%s.h"', _ns.header)
 
     _c('')
-    _c('#define ALIGNOF(type) offsetof(struct { char dummy; type member; }, member)')
 
     if _ns.is_ext:
         for (n, h) in self.direct_imports:
@@ -308,6 +309,13 @@ def c_open(self):
 
         _c('')
         _c('xcb_extension_t %s = { "%s", 0 };', _ns.c_ext_global_name, _ns.ext_xname)
+    _c('static int xcb_checked_mul(unsigned long long x, unsigned long long y)')
+    _c('{')
+    _c('    int z;')
+    _c('    if (__builtin_mul_overflow(x, y, &z))')
+    _c('        return -1;')
+    _c('    return z;')
+    _c('}')
 
 def c_close(self):
     '''
@@ -528,12 +536,14 @@ def _c_type_setup(self, name, postfix):
                 #   special cases -> unserialize
                 if self.is_switch or self.c_var_followed_by_fixed_fields:
                     _c_serialize('unserialize', self)
+                    _c_serialize('unserialize_checked', self)
 
         if self.c_need_sizeof:
             if self.c_sizeof_name not in finished_sizeof:
                 if not module.namespace.is_ext or self.name[:2] == module.namespace.prefix:
                     finished_sizeof.append(self.c_sizeof_name)
                     _c_serialize('sizeof', self)
+                    _c_serialize('sizeof_checked', self)
 
 # Functions for querying field properties
 def _c_field_needs_list_accessor(field):
@@ -791,8 +801,12 @@ def get_serialize_params(context, self, buffer_var='_buffer', aux_var='_aux'):
     # 1. the parameter for the void * buffer
     if  'serialize' == context:
         params.append(('void', '**', buffer_var))
-    elif context in ('unserialize', 'unpack', 'sizeof'):
+    elif context in ('unserialize', 'unserialize_checked', 'unpack', 'unpack_checked', 'sizeof', 'sizeof_checked'):
         params.append(('const void', '*', buffer_var))
+        if context.endswith('checked'):
+            params.append(('const void', '*', 'xcb_end'))
+    else:
+        assert False
 
     # 2. any expr fields that cannot be resolved within self and descendants
     unresolved_fields = resolve_expr_fields(self)
@@ -815,9 +829,9 @@ def get_serialize_params(context, self, buffer_var='_buffer', aux_var='_aux'):
     # 4. aux argument
     if 'serialize' == context:
         add_param(params, ('const %s' % self.c_type, '*', aux_var))
-    elif 'unserialize' == context:
+    elif context.startswith('unserialize'):
         add_param(params, ('%s' % self.c_type, '**', aux_var))
-    elif 'unpack' == context:
+    elif context.startswith('unpack'):
         add_param(params, ('%s' % self.c_type, '*', aux_var))
 
     # 5. switch contains all variable size fields as struct members
@@ -849,7 +863,9 @@ def _c_serialize_helper_insert_padding(context, complex_type, code_lines, space,
             code_lines.append('%s        xcb_parts[xcb_parts_idx].iov_base = xcb_pad0;' % space)
             code_lines.append('%s        xcb_parts[xcb_parts_idx].iov_len = xcb_pad;' % space)
             code_lines.append('%s        xcb_parts_idx++;' % space)
-        elif context in ('unserialize', 'unpack', 'sizeof'):
+        elif context in ('unserialize', 'unserialize_checked', 'unpack', 'unpack_checked', 'sizeof', 'sizeof_checked'):
+            if context.endswith('checked'):
+                _c_emit_bounds_check(code_lines, space + '    ', 'xcb_pad')
             code_lines.append('%s        xcb_tmp += xcb_pad;' % space)
 
         code_lines.append('%s        xcb_pad = 0;' % space)
@@ -866,7 +882,7 @@ def _c_serialize_helper_switch(context, self, complex_name,
                                code_lines, temp_vars,
                                space, prefix):
     count = 0
-    switch_expr = _c_accessor_get_expr(self.expr, None)
+    switch_expr = _c_accessor_get_expr(self.expr, None, checked=context.endswith("checked"))
 
     for b in self.bitcases:
         len_expr = len(b.type.expr)
@@ -878,7 +894,7 @@ def _c_serialize_helper_switch(context, self, complex_name,
             compare_operator = '&'
 
         for n, expr in enumerate(b.type.expr):
-            bitcase_expr = _c_accessor_get_expr(expr, None)
+            bitcase_expr = _c_accessor_get_expr(expr, None, checked=context.endswith("checked"))
             # only one <enumref> in the <bitcase>
             if len_expr == 1:
                 code_lines.append(
@@ -907,7 +923,7 @@ def _c_serialize_helper_switch(context, self, complex_name,
 
 #    if 'serialize' == context:
 #        count += _c_serialize_helper_insert_padding(context, self, code_lines, space, False)
-#    elif context in ('unserialize', 'unpack', 'sizeof'):
+#    elif context in ('unserialize', 'unserialize_checked', 'unpack', 'unpack_checked', 'sizeof', 'sizeof_checked'):
 #        # padding
 #        code_lines.append('%s    xcb_pad = -xcb_block_len & 3;' % space)
 #        code_lines.append('%s    xcb_buffer_len += xcb_block_len + xcb_pad;' % space)
@@ -946,13 +962,16 @@ def _c_serialize_helper_switch_field(context, self, field, c_switch_variable, pr
     if 'serialize' == context:
         length = "%s(&%s, %s&%s%s)" % (field.type.c_serialize_name, c_switch_variable,
                                        c_field_names, prefix_str, field.c_field_name)
-    elif context in ('unserialize', 'unpack'):
-        length = "%s(xcb_tmp, %s&%s%s)" % (field.type.c_unpack_name,
-                                           c_field_names, prefix_str, field.c_field_name)
-    elif 'sizeof' == context:
+    elif context in ('unserialize', 'unserialize_checked', 'unpack', 'unpack_checked'):
+        length = "%s%s(xcb_tmp, %s%s&%s%s)" % (field.type.c_unpack_name, '_checked' if context.endswith('checked') else '',
+                                               'xcb_end, ' if context.endswith('checked') else '',
+                                               c_field_names, prefix_str, field.c_field_name)
+    elif context in ('sizeof', 'sizeof_checked'):
         # remove trailing ", " from c_field_names because it will be used at end of arglist
         my_c_field_names = c_field_names[:-2]
         length = "%s(xcb_tmp, %s)" % (field.type.c_sizeof_name, my_c_field_names)
+    else:
+        assert False, 'bad context %r' % context
 
     return length
 
@@ -1011,10 +1030,10 @@ def _c_serialize_helper_list_field(context, self, field,
     if expr.op == 'calculate_len':
         list_length = field.type.expr.lenfield_name
     else:
-        list_length = _c_accessor_get_expr(expr, field_mapping)
+        list_length = _c_accessor_get_expr(expr, field_mapping, checked=context.endswith("checked"))
 
     # default: list with fixed size elements
-    length = '%s * sizeof(%s)' % (list_length, field.type.member.c_wiretype)
+    length = 'xcb_checked_mul(%s, sizeof(%s))' % (list_length, field.type.member.c_wiretype)
 
     # list with variable-sized elements
     if not field.type.member.fixed_size():
@@ -1027,7 +1046,7 @@ def _c_serialize_helper_list_field(context, self, field,
 
         #
         length = ''
-        if context in ('unserialize', 'sizeof', 'unpack'):
+        if context in ('unserialize', 'unserialize_checked', 'sizeof', 'unpack', 'unpack_checked', 'sizeof_checked'):
             int_i = '    unsigned int i;'
             xcb_tmp_len = '    unsigned int xcb_tmp_len;'
             if int_i not in temp_vars:
@@ -1037,8 +1056,18 @@ def _c_serialize_helper_list_field(context, self, field,
             # loop over all list elements and call sizeof repeatedly
             # this should be a bit faster than using the iterators
             code_lines.append("%s    for(i=0; i<%s; i++) {" % (space, list_length))
-            code_lines.append("%s        xcb_tmp_len = %s(xcb_tmp%s);" %
-                              (space, field.type.c_sizeof_name, member_arg_str))
+            if context.endswith('checked'):
+                code_lines.append('%s        if ((const char *)xcb_end < (const char *)xcb_tmp)' % (space,))
+                code_lines.append('%s            abort();' % (space,))
+                code_lines.append("%s        xcb_tmp_len = %s_checked(xcb_tmp, xcb_end%s);" %
+                                  (space, field.type.c_sizeof_name, member_arg_str))
+                code_lines.append("%s        if (xcb_tmp_len < 0)" % (space,))
+                code_lines.append("%s            return xcb_tmp_len;" % (space,))
+                code_lines.append('%s        if ((size_t)((const char *)xcb_end - (const char *)xcb_tmp) < xcb_tmp_len)' % (space,))
+                code_lines.append('%s            return -1;' % (space,))
+            else:
+                code_lines.append("%s        xcb_tmp_len = %s(xcb_tmp%s);" %
+                                  (space, field.type.c_sizeof_name, member_arg_str))
             code_lines.append("%s        xcb_block_len += xcb_tmp_len;" % space)
             code_lines.append("%s        xcb_tmp += xcb_tmp_len;" % space)
             code_lines.append("%s    }" % space)
@@ -1069,7 +1098,7 @@ def _c_serialize_helper_fields_fixed_size(context, self, field,
     # default for simple cases: call sizeof()
     length = "sizeof(%s)" % field.c_field_type
 
-    if context in ('unserialize', 'unpack', 'sizeof'):
+    if context in ('unserialize', 'unserialize_checked', 'unpack', 'unpack_checked', 'sizeof', 'sizeof_checked'):
         # default: simple cast
         value = '    %s = *(%s *)xcb_tmp;' % (abs_field_name, field.c_field_type)
 
@@ -1077,7 +1106,7 @@ def _c_serialize_helper_fields_fixed_size(context, self, field,
         if field.type.is_pad and field.type.nmemb > 1:
             value = ''
             for i in range(field.type.nmemb):
-                code_lines.append('%s    %s[%d] = *(%s *)xcb_tmp;' %
+                code_lines.append('%s    %s[%d] = *(const %s *)xcb_tmp;' %
                                   (space, abs_field_name, i, field.c_field_type))
             # total padding = sizeof(pad0) * nmemb
             length += " * %d" % field.type.nmemb
@@ -1097,10 +1126,10 @@ def _c_serialize_helper_fields_fixed_size(context, self, field,
             # need to register a temporary variable for the expression in case we know its type
             if field.type.c_type is None:
                 raise Exception("type for field '%s' (expression '%s') unkown" %
-                                (field.field_name, _c_accessor_get_expr(field.type.expr)))
+                                (field.field_name, _c_accessor_get_expr(field.type.expr, prefix, False)))
 
             temp_vars.append('    %s xcb_expr_%s = %s;' % (field.type.c_type, _cpp(field.field_name),
-                                                           _c_accessor_get_expr(field.type.expr, prefix)))
+                                                           _c_accessor_get_expr(field.type.expr, prefix, False)))
             value += "&xcb_expr_%s;" % _cpp(field.field_name)
 
         elif field.type.is_pad:
@@ -1128,16 +1157,16 @@ def _c_serialize_helper_fields_variable_size(context, self, field,
                                              space, prefix):
     prefix_str = _c_helper_fieldaccess_expr(prefix)
 
-    if context in ('unserialize', 'unpack', 'sizeof'):
+    if context in ('unserialize', 'unserialize_checked', 'unpack', 'unpack_checked', 'sizeof', 'sizeof_checked'):
         value = ''
         var_field_name = 'xcb_tmp'
 
         # special case: intermixed fixed and variable size fields
-        if self.c_var_followed_by_fixed_fields and 'unserialize' == context:
+        if self.c_var_followed_by_fixed_fields and context.startswith('unserialize'):
             value = '    %s = (%s *)xcb_tmp;' % (field.c_field_name, field.c_field_type)
             temp_vars.append('    %s *%s;' % (field.type.c_type, field.c_field_name))
         # special case: switch
-        if 'unpack' == context:
+        if context.startswith('unpack'):
             value = '    %s%s = (%s *)xcb_tmp;' % (prefix_str, field.c_field_name, field.c_field_type)
 
     elif 'serialize' == context:
@@ -1175,6 +1204,12 @@ def _c_serialize_helper_fields_variable_size(context, self, field,
 
     return (value, length)
 
+def _c_emit_bounds_check(code_lines, space, length):
+    code_lines.append('%s    if ((const char *)xcb_end < (const char *)xcb_tmp)' % (space,))
+    code_lines.append('%s        abort();' % (space,))
+    code_lines.append('%s    if ((size_t)((const char *)xcb_end - (const char *)xcb_tmp) < %s)' % (space, length))
+    code_lines.append('%s        return -1;' % (space,))
+
 def _c_serialize_helper_fields(context, self,
                                code_lines, temp_vars,
                                space, prefix, is_case_or_bitcase):
@@ -1188,7 +1223,7 @@ def _c_serialize_helper_fields(context, self,
         if not field.wire:
             continue
         if not field.visible:
-            if not ((field.wire and not field.auto) or 'unserialize' == context):
+            if not ((field.wire and not field.auto) or context.startswith('unserialize')):
                 continue
 
         # switch/bitcase: fixed size fields must be considered explicitly
@@ -1239,24 +1274,39 @@ def _c_serialize_helper_fields(context, self,
         if field.type.fixed_size():
             if is_case_or_bitcase or self.c_var_followed_by_fixed_fields:
                 # keep track of (un)serialized object's size
-                code_lines.append('%s    xcb_block_len += %s;' % (space, length))
+                assert 'xcb_block_len' not in length
                 if context in ('unserialize', 'unpack', 'sizeof'):
                     code_lines.append('%s    xcb_tmp += %s;' % (space, length))
+                elif context in ('unserialize_checked', 'sizeof_checked', 'unpack_checked'):
+                    _c_emit_bounds_check(code_lines, space, length)
+                    code_lines.append('%s    xcb_tmp += %s;' % (space, length))
+                code_lines.append('%s    xcb_block_len += %s;' % (space, length))
         else:
             # variable size objects or bitcase:
             #   value & length might have been inserted earlier for special cases
             if '' != length:
                 # special case: intermixed fixed and variable size fields
                 if (not field.type.fixed_size() and
-                    self.c_var_followed_by_fixed_fields and 'unserialize' == context):
+                    self.c_var_followed_by_fixed_fields and context.startswith('unserialize')):
                     temp_vars.append('    int %s_len;' % field.c_field_name)
                     code_lines.append('%s    %s_len = %s;' % (space, field.c_field_name, length))
+                    code_lines.append('%s    if (__builtin_add_overflow(xcb_block_len, %s_len, &xcb_block_len))' % (space, field.c_field_name))
+                    if context.endswith('checked'):
+                        code_lines.append('%s        return -1;' % (space,))
+                        _c_emit_bounds_check(code_lines, space, field.c_field_name)
+                    else:
+                        code_lines.append('%s        abort();' % (space,))
                     code_lines.append('%s    xcb_block_len += %s_len;' % (space, field.c_field_name))
                     code_lines.append('%s    xcb_tmp += %s_len;' % (space, field.c_field_name))
                 else:
-                    code_lines.append('%s    xcb_block_len += %s;' % (space, length))
+                    code_lines.append('%s    if (__builtin_add_overflow(xcb_block_len, %s, &xcb_block_len))' % (space, length))
+                    if context.endswith('checked'):
+                        code_lines.append('%s        return -1;' % (space,))
+                        _c_emit_bounds_check(code_lines, space, 'xcb_block_len')
+                    else:
+                        code_lines.append('%s        abort();' % (space,))
                     # increase pointer into the byte stream accordingly
-                    if context in ('unserialize', 'sizeof', 'unpack'):
+                    if context in ('unserialize', 'unserialize_checked', 'sizeof', 'unpack', 'unpack_checked', 'sizeof_checked'):
                         code_lines.append('%s    xcb_tmp += xcb_block_len;' % space)
 
         if 'serialize' == context:
@@ -1266,7 +1316,7 @@ def _c_serialize_helper_fields(context, self,
             count += 1
 
         code_lines.append(
-            '%s    xcb_align_to = ALIGNOF(%s);'
+            '%s    xcb_align_to = alignof(%s);'
              % (space,
                  'char'
                   if field.c_field_type == 'void' or field.type.is_switch
@@ -1305,8 +1355,13 @@ def _c_serialize_helper(context, complex_type,
     # all other data types can be evaluated one field a time
     else:
         # unserialize & fixed size fields: simply cast the buffer to the respective xcb_out type
-        if context in ('unserialize', 'unpack', 'sizeof') and not self.c_var_followed_by_fixed_fields:
-            code_lines.append('%s    xcb_block_len += sizeof(%s);' % (space, self.c_type))
+        if context != 'serialize' and not self.c_var_followed_by_fixed_fields:
+            code_lines.append('%s    if (__builtin_add_overflow(xcb_block_len, sizeof(%s), &xcb_block_len))' % (space, self.c_type))
+            if context.endswith('checked'):
+                code_lines.append('%s        return -1;' % (space,))
+                _c_emit_bounds_check(code_lines, space, 'xcb_block_len')
+            else:
+                code_lines.append('%s        abort();' % (space,))
             code_lines.append('%s    xcb_tmp += xcb_block_len;' % space)
             code_lines.append('%s    xcb_buffer_len += xcb_block_len;' % space)
             code_lines.append('%s    xcb_block_len = 0;' % space)
@@ -1321,7 +1376,7 @@ def _c_serialize_helper(context, complex_type,
 
 def _c_serialize(context, self):
     """
-    depending on the context variable, generate _serialize(), _unserialize(), _unpack(), or _sizeof()
+    depending on the context variable, generate _serialize(), _unserialize(), _unpack(), _sizeof(), or _sizeof_checked()
     for the ComplexType variable self
     """
     _h_setlevel(1)
@@ -1331,13 +1386,16 @@ def _c_serialize(context, self):
     # _serialize() returns the buffer size
     _hc('int')
 
-    if self.is_switch and 'unserialize' == context:
-        context = 'unpack'
+    if self.is_switch and context.startswith('unserialize'):
+        context = context.replace('serialize', 'pack')
 
-    cases = { 'serialize'   : self.c_serialize_name,
-              'unserialize' : self.c_unserialize_name,
-              'unpack'      : self.c_unpack_name,
-              'sizeof'      : self.c_sizeof_name }
+    cases = { 'serialize'           : self.c_serialize_name,
+              'unserialize'         : self.c_unserialize_name,
+              'unserialize_checked' : self.c_unserialize_name + '_checked',
+              'unpack'              : self.c_unpack_name,
+              'unpack_checked'      : self.c_unpack_name + '_checked',
+              'sizeof'              : self.c_sizeof_name,
+              'sizeof_checked'      : self.c_sizeof_name + '_checked' }
     func_name = cases[context]
 
     param_fields, wire_fields, params = get_serialize_params(context, self)
@@ -1391,7 +1449,7 @@ def _c_serialize(context, self):
         prefix = [('_aux', '->', self)]
         aux_ptr = 'xcb_out'
 
-    elif context in ('unserialize', 'unpack'):
+    elif context in ('unserialize', 'unserialize_checked', 'unpack', 'unpack_checked'):
         _c('    char *xcb_tmp = (char *)_buffer;')
         if not self.is_switch:
             if not self.c_var_followed_by_fixed_fields:
@@ -1415,22 +1473,27 @@ def _c_serialize(context, self):
             _c('    unsigned int xcb_padding_offset = %d;',
                self.get_align_offset() )
 
-    elif 'sizeof' == context:
+    elif context in ('sizeof', 'sizeof_checked'):
         param_names = [p[2] for p in params]
         if self.length_expr is not None:
             _c('    const %s *_aux = (%s *)_buffer;', self.c_type, self.c_type)
             prefix = [('_aux', '->', self)]
-
             field_mapping = _c_get_field_mapping_for_expr(self, self.length_expr, prefix)
-
-            _c('    return %s;', _c_accessor_get_expr(self.length_expr, field_mapping))
+            v = _c_accessor_get_expr(self.length_expr, field_mapping, checked=context.endswith('checked'))
+            _c('')
+            for t in temp_vars:
+                _c(t)
+            _c('')
+            for l in code_lines:
+                _c(l)
+            _c('    return %s;', v)
             _c('}')
             _c_pre.redirect_end()
             return
         if self.is_switch:
             # switch: call _unpack()
             _c('    %s _aux;', self.c_type)
-            _c('    return %s(%s, &_aux);', self.c_unpack_name, ", ".join(param_names))
+            _c('    return %s%s(%s, &_aux);', self.c_unpack_name, context[6:], ", ".join(param_names))
             _c('}')
             _c_pre.redirect_end()
             return
@@ -1445,6 +1508,8 @@ def _c_serialize(context, self):
             prefix = [('_aux', '->', self)]
             if self.is_switch:
                 _c('    unsigned int xcb_padding_offset = 0;')
+    else:
+        assert False, 'bad context %r' % context
 
     count = _c_serialize_helper(context, self, code_lines, temp_vars, prefix=prefix)
     # update variable size fields (only important for context=='serialize'
@@ -1457,7 +1522,7 @@ def _c_serialize(context, self):
         temp_vars.append('    unsigned int xcb_block_len = 0;')
         temp_vars.append('    unsigned int i;')
         temp_vars.append('    char *xcb_tmp;')
-    elif 'sizeof' == context:
+    elif context.startswith('sizeof'):
         # neither switch nor intermixed fixed and variable size fields:
         # evaluate parameters directly
         if not (self.is_switch or self.c_var_followed_by_fixed_fields):
@@ -1486,9 +1551,9 @@ def _c_serialize(context, self):
     # variable sized fields have been collected, now
     # allocate memory and copy everything into a continuous memory area
     # note: this is not necessary in case of unpack
-    if context in ('serialize', 'unserialize'):
+    if context in ('serialize', 'unserialize', 'unserialize_checked'):
         # unserialize: check for sizeof-only invocation
-        if 'unserialize' == context:
+        if context.startswith('unserialize'):
             _c('')
             _c('    if (NULL == _aux)')
             _c('        return xcb_buffer_len;')
@@ -1497,6 +1562,8 @@ def _c_serialize(context, self):
         _c('    if (NULL == %s) {', aux_ptr)
         _c('        /* allocate memory */')
         _c('        %s = malloc(xcb_buffer_len);', aux_ptr)
+        _c('        if (%s == NULL)', aux_ptr)
+        _c('            return -1;')
         if 'serialize' == context:
             _c('        *_buffer = xcb_out;')
         _c('    }')
@@ -1525,8 +1592,8 @@ def _c_serialize(context, self):
                 _c('    }')
 
         # unserialize: assign variable size fields individually
-        if 'unserialize' == context:
-            _c('    xcb_tmp = ((char *)*_aux)+xcb_buffer_len;')
+        if context.startswith('unserialize'):
+            _c('    xcb_tmp = ((const char *)*_aux)+xcb_buffer_len;')
             param_fields.reverse()
             for field in param_fields:
                 if not field.type.fixed_size():
@@ -1575,7 +1642,7 @@ def _c_iterator(self, name):
             param[0],
             ' ' * (len(self.c_type) + 1 - len(param[0])),
             param[2])
-    _h('} %s;', self.c_iterator_type)
+    _h('} XCB_MAY_ALIAS %s;', self.c_iterator_type)
 
     _h_setlevel(1)
     _c_setlevel(1)
@@ -1673,7 +1740,7 @@ def _c_accessor_get_length(expr, field_mapping=None):
     else:
         return str(expr.nmemb)
 
-def _c_accessor_get_expr(expr, field_mapping):
+def _c_accessor_get_expr(expr, field_mapping, *, checked):
     '''
     Figures out what C code is needed to get the length of a list field.
     The field_mapping parameter can be used to change the absolute name of a length field.
@@ -1683,11 +1750,11 @@ def _c_accessor_get_expr(expr, field_mapping):
     '''
     lenexp = _c_accessor_get_length(expr, field_mapping)
 
-    if expr.op == '~':
-        return '(' + '~' + _c_accessor_get_expr(expr.rhs, field_mapping) + ')'
-    elif expr.op == 'popcount':
-        return 'xcb_popcount(' + _c_accessor_get_expr(expr.rhs, field_mapping) + ')'
-    elif expr.op == 'enumref':
+    if expr.op == '~': # SAFE
+        return '(' + '~' + _c_accessor_get_expr(expr.rhs, field_mapping, checked=checked) + ')'
+    elif expr.op == 'popcount': # SAFE
+        return 'xcb_popcount(' + _c_accessor_get_expr(expr.rhs, field_mapping, checked=checked) + ')'
+    elif expr.op == 'enumref': # SAFE
         enum_name = expr.lenfield_type.name
         constant_name = expr.lenfield_name
         c_name = _n(enum_name + (constant_name,)).upper()
@@ -1697,7 +1764,7 @@ def _c_accessor_get_expr(expr, field_mapping):
         field = expr.lenfield
         list_name = field_mapping[field.c_field_name][0]
         c_length_func = "%s(%s)" % (field.c_length_name, list_name)
-        c_length_func = _c_accessor_get_expr(field.type.expr, field_mapping)
+        c_length_func = _c_accessor_get_expr(field.type.expr, field_mapping, checked=checked)
         # create explicit code for computing the sum.
         # This works for all C-types which can be added to int64_t with +=
         _c_pre.start()
@@ -1742,11 +1809,16 @@ def _c_accessor_get_expr(expr, field_mapping):
             # cause pre-code of the subexpression be added right here
             _c_pre.end()
             # compute the subexpression
-            rhs_expr_str = _c_accessor_get_expr(expr.rhs, scoped_field_mapping)
+            rhs_expr_str = _c_accessor_get_expr(expr.rhs, scoped_field_mapping, checked=checked)
             # resume with our code
             _c_pre.start()
             # output the summation expression
-            _c_pre.code("%s += %s;", sumvar, rhs_expr_str)
+            if checked:
+                _c_pre.code("if (__builtin_add_overflow(%s, %s, &%s))", sumvar, rhs_expr_str, sumvar)
+                _c_pre.code("    /* SUMOF */")
+                _c_pre.code("    return -1;")
+            else:
+                _c_pre.code("%s += %s;", sumvar, rhs_expr_str)
 
         _c_pre.code("%s++;", listvar)
         _c_pre.pop_indent()
@@ -1757,9 +1829,39 @@ def _c_accessor_get_expr(expr, field_mapping):
     elif expr.op == 'listelement-ref':
         return '(*xcb_listelement)'
     elif expr.op != None and expr.op != 'calculate_len':
-        return ('(' + _c_accessor_get_expr(expr.lhs, field_mapping) +
-                ' ' + expr.op + ' ' +
-                _c_accessor_get_expr(expr.rhs, field_mapping) + ')')
+        _c_pre.start()
+        sumvar = _c_pre.get_tempvarname()
+        match expr.op:
+            case '+':
+                op = 'add'
+            case '-':
+                op = 'sub'
+            case '*':
+                op = 'mul'
+            case '/':
+                _c_pre.tempvar("int64_t %s;", sumvar)
+                _c_pre.code("%s = (%s);",
+                            sumvar,
+                            _c_accessor_get_expr(expr.rhs, field_mapping, checked=checked))
+                _c_pre.code("if (%s < 1)", sumvar)
+                _c_pre.code("    return -1;" if checked else "    abort();")
+                _c_pre.end()
+                return ('((' + _c_accessor_get_expr(expr.lhs, field_mapping, checked=checked) + ') / ' + sumvar + ')')
+            case '&':
+                _c_pre.end()
+                return ('(' + _c_accessor_get_expr(expr.lhs, field_mapping, checked=checked) +
+                        ' & ' + _c_accessor_get_expr(expr.rhs, field_mapping, checked=checked) + ')')
+            case _:
+                assert False
+        _c_pre.tempvar("int64_t %s; /* sum */", sumvar)
+        _c_pre.code("if (__builtin_%s_overflow((%s), (%s), &%s))",
+                    op,
+                    _c_accessor_get_expr(expr.lhs, field_mapping, checked=checked),
+                    _c_accessor_get_expr(expr.rhs, field_mapping, checked=checked),
+                    sumvar)
+        _c_pre.code("    return -1;" if checked else "    abort();")
+        _c_pre.end()
+        return ('(' + sumvar + ')')
     elif expr.bitfield:
         return 'xcb_popcount(' + lenexp + ')'
     else:
@@ -1971,7 +2073,7 @@ def _c_accessors_list(self, field):
                     (field.c_field_name)
                 );
         else:
-            return _c_accessor_get_expr(field.type.expr, fields)
+            return _c_accessor_get_expr(field.type.expr, fields, checked=False)
 
     _c('    return %s;', get_length())
     _c('}')
@@ -2152,7 +2254,7 @@ def _c_complex(self, force_packed = False):
             if b.type.has_name:
                 _h('    } %s;', b.c_field_name)
 
-    _h('} %s%s;', 'XCB_PACKED ' if force_packed else '', self.c_type)
+    _h('} %sXCB_MAY_ALIAS %s;', 'XCB_PACKED ' if force_packed else '', self.c_type)
 
 def c_struct(self, name):
     '''
@@ -2367,7 +2469,7 @@ def _c_request_helper(self, name, void, regular, aux=False, reply_fds=False):
             _c('    void *xcb_aux%d = 0;' % (idx))
     if list_with_var_size_elems:
         _c('    unsigned int xcb_tmp_len;')
-        _c('    char *xcb_tmp;')
+        _c('    const char *xcb_tmp;')
 
     num_fds_fixed = 0
     num_fds_expr = []
@@ -2376,7 +2478,7 @@ def _c_request_helper(self, name, void, regular, aux=False, reply_fds=False):
             if not field.type.is_list:
                 num_fds_fixed += 1
             else:
-                num_fds_expr.append(_c_accessor_get_expr(field.type.expr, None))
+                num_fds_expr.append(_c_accessor_get_expr(field.type.expr, None, checked=True))
 
     if list_with_var_size_elems or len(num_fds_expr) > 0:
         _c('    unsigned int i;')
@@ -2396,7 +2498,7 @@ def _c_request_helper(self, name, void, regular, aux=False, reply_fds=False):
     for field in wire_fields:
         if field.type.fixed_size():
             if field.type.is_expr:
-                _c('    xcb_out.%s = %s;', field.c_field_name, _c_accessor_get_expr(field.type.expr, None))
+                _c('    xcb_out.%s = %s;', field.c_field_name, _c_accessor_get_expr(field.type.expr, None, checked=True))
             elif field.type.is_pad:
                 if field.type.nmemb == 1:
                     _c('    xcb_out.%s = 0;', field.c_field_name)
@@ -2437,12 +2539,12 @@ def _c_request_helper(self, name, void, regular, aux=False, reply_fds=False):
                             if field.type.expr.op == 'calculate_len':
                                 lenfield = field.type.expr.lenfield_name
                             else:
-                                lenfield = _c_accessor_get_expr(field.type.expr, None)
+                                lenfield = _c_accessor_get_expr(field.type.expr, None, checked=False)
 
                             _c('    xcb_parts[%d].iov_len = %s * sizeof(%s);', count, lenfield,
                                         field.type.member.c_wiretype)
                         else:
-                            list_length = _c_accessor_get_expr(field.type.expr, None)
+                            list_length = _c_accessor_get_expr(field.type.expr, None, checked=False)
                             length = ''
 
                             _c("    xcb_parts[%d].iov_len = 0;" % count)
@@ -2500,7 +2602,7 @@ def _c_request_helper(self, name, void, regular, aux=False, reply_fds=False):
             if not field.type.is_list:
                 _c('    fds[fd_index++] = %s;', field.c_field_name)
             else:
-                _c('    for (i = 0; i < %s; i++)', _c_accessor_get_expr(field.type.expr, None))
+                _c('    for (i = 0; i < %s; i++)', _c_accessor_get_expr(field.type.expr, None, checked=False))
                 _c('        fds[fd_index++] = %s[i];', field.c_field_name)
 
     if not num_fds:
@@ -2566,34 +2668,39 @@ def _c_reply(self, name):
     _h('%sxcb_generic_error_t%s **e);', spacing3, spacing2)
     _c('%sxcb_generic_error_t%s **e)', spacing3, spacing2)
     _c('{')
-
-    if len(unserialize_fields)>0:
-        # certain variable size fields need to be unserialized explicitly
-        _c('    %s *reply = (%s *) xcb_wait_for_reply(c, cookie.sequence, e);',
+    if not self.reply.fixed_size:
+        _c('    %s *reply = (%s *) xcb_wait_for_reply_safe(c, cookie.sequence, e, sizeof (*reply));',
            self.c_reply_type, self.c_reply_type)
-        _c('    int i;')
-        for field in unserialize_fields:
-            if field.type.is_list:
-                _c('    %s %s_iter = %s(reply);', field.c_iterator_type, field.c_field_name, field.c_iterator_name)
-                _c('    int %s_len = %s(reply);', field.c_field_name, field.c_length_name)
-                _c('    %s *%s_data;', field.c_field_type, field.c_field_name)
-            else:
-                raise Exception('not implemented: call _unserialize() in reply for non-list type %s', field.c_field_type)
-        # call _unserialize(), using the reply as source and target buffer
-        _c('    /* special cases: transform parts of the reply to match XCB data structures */')
-        for field in unserialize_fields:
-            if field.type.is_list:
-                _c('    for(i=0; i<%s_len; i++) {', field.c_field_name)
-                _c('        %s_data = %s_iter.data;', field.c_field_name, field.c_field_name)
-                _c('        %s((const void *)%s_data, &%s_data);', field.type.c_unserialize_name,
-                   field.c_field_name, field.c_field_name)
-                _c('        %s(&%s_iter);', field.type.c_next_name, field.c_field_name)
-                _c('    }')
-        # return the transformed reply
+        _c('    if (!reply)')
+        _c('        return NULL;')
+        _c('    if (%s_checked(reply) < 0) {', self.c_sizeof_name)
+        _c('        free(reply);')
+        _c('        return NULL;')
+        _c('    }')
+        if len(unserialize_fields)>0:
+            # certain variable size fields need to be unserialized explicitly
+            _c('    int i;')
+            for field in unserialize_fields:
+                if field.type.is_list:
+                    _c('    %s %s_iter = %s(reply);', field.c_iterator_type, field.c_field_name, field.c_iterator_name)
+                    _c('    int %s_len = %s(reply);', field.c_field_name, field.c_length_name)
+                    _c('    %s *%s_data;', field.c_field_type, field.c_field_name)
+                else:
+                    raise Exception('not implemented: call _unserialize() in reply for non-list type %s', field.c_field_type)
+            # call _unserialize(), using the reply as source and target buffer
+            _c('    /* special cases: transform parts of the reply to match XCB data structures */')
+            for field in unserialize_fields:
+                if field.type.is_list:
+                    _c('    for(i=0; i<%s_len; i++) {', field.c_field_name)
+                    _c('        %s_data = %s_iter.data;', field.c_field_name, field.c_field_name)
+                    _c('        %s((const void *)%s_data, &%s_data);', field.type.c_unserialize_name,
+                       field.c_field_name, field.c_field_name)
+                    _c('        %s(&%s_iter);', field.type.c_next_name, field.c_field_name)
+                    _c('    }')
+            # return the transformed reply
         _c('    return reply;')
-
     else:
-        _c('    return (%s *) xcb_wait_for_reply(c, cookie.sequence, e);', self.c_reply_type)
+        _c('    return (%s *) xcb_wait_for_reply_safe(c, cookie.sequence, e, sizeof (%s));', self.c_reply_type, self.c_reply_type)
 
     _c('}')
 
@@ -2649,7 +2756,7 @@ def _c_cookie(self, name):
     _h(' **/')
     _h('typedef struct %s {', self.c_cookie_type)
     _h('    unsigned int sequence;')
-    _h('} %s;', self.c_cookie_type)
+    _h('} XCB_MAY_ALIAS %s;', self.c_cookie_type)
 
 def _man_request(self, name, void, aux):
     param_fields = [f for f in self.fields if f.visible]
@@ -2705,7 +2812,7 @@ def _man_request(self, name, void, aux):
         f.write('.SS Reply datastructure\n')
         f.write('.nf\n')
         f.write('.sp\n')
-        f.write('typedef %s %s {\n' % (self.reply.c_container, self.reply.c_type))
+        f.write('typedef XCB_MAY_ALIAS %s %s {\n' % (self.reply.c_container, self.reply.c_type))
         struct_fields = []
         maxtypelen = 0
 
@@ -3282,7 +3389,7 @@ def c_event(self, name):
     else:
         # Typedef
         _h('')
-        _h('typedef %s %s;', _t(self.name + ('event',)), _t(name + ('event',)))
+        _h('typedef XCB_MAY_ALIAS %s %s;', _t(self.name + ('event',)), _t(name + ('event',)))
 
         # Create sizeof-function for eventcopies for compatibility reasons
         if self.c_need_sizeof:
@@ -3317,7 +3424,7 @@ def c_error(self, name):
     else:
         # Typedef
         _h('')
-        _h('typedef %s %s;', _t(self.name + ('error',)), _t(name + ('error',)))
+        _h('typedef XCB_MAY_ALIAS %s %s;', _t(self.name + ('error',)), _t(name + ('error',)))
 
 
 # Main routine starts here

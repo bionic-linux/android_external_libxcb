@@ -53,8 +53,14 @@ extern "C" {
 
 #ifdef __GNUC__
 #define XCB_PACKED __attribute__((__packed__))
+#ifndef XCB_MAY_ALIAS
+#define XCB_MAY_ALIAS __attribute__((may_alias))
+#endif
 #else
 #define XCB_PACKED
+#ifndef XCB_MAY_ALIAS
+#define XCB_MAY_ALIAS
+#endif
 #endif
 
 /**

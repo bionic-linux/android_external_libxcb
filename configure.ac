@@ -15,7 +15,7 @@ AM_INIT_AUTOMAKE([foreign dist-xz])
 AM_PATH_PYTHON([3.0])
 
 # Set common system defines for POSIX extensions, such as _GNU_SOURCE
-# Must be called before any macros that run the compiler (like AC_PROG_LIBTOOL)
+# Must be called before any macros that run the compiler (like LT_INIT)
 # to avoid autoconf errors.
 AC_USE_SYSTEM_EXTENSIONS
 AC_SYS_LARGEFILE
@@ -27,6 +27,8 @@ LT_INIT([win32-dll])
 # Require xorg-macros minimum of 1.18 - Initial version
 m4_ifndef([XORG_MACROS_VERSION],
           [m4_fatal([must install xorg-macros 1.18 or later before running autoconf/autogen])])
+XORG_TESTSET_CFLAG([XCB_CFLAGS], [-fno-strict-aliasing])
+AC_SUBST([XCB_CFLAGS])
 XORG_MACROS_VERSION(1.18)
 XORG_DEFAULT_OPTIONS
 XORG_ENABLE_DEVEL_DOCS
@@ -248,6 +250,23 @@ XCB_EXTENSION(XTest, yes)
 XCB_EXTENSION(Xv, yes)
 XCB_EXTENSION(XvMC, yes)
 
+AC_MSG_CHECKING([[if __attribute__((may_alias)) is supported]])
+AC_COMPILE_IFELSE([AC_LANG_PROGRAM([[
+typedef struct x { int a; } __attribute__((may_alias)) x;
+]])],[
+AC_DEFINE([[XCB_MAY_ALIAS]], [[__attribute__((may_alias))]], [Define if __attribute__((may_alias)) works])
+AC_MSG_RESULT([[yes]])
+],[
+AC_MSG_RESULT([[no]])
+AC_MSG_CHECKING([[if -fno-strict-aliasing works]])[
+case $XCB_CFLAGS in
+*-fno-strict-aliasing*)]
+  AC_MSG_RESULT([[yes]])
+  AC_MSG_WARN([[may_alias not supported, programs must use -fno-strict-aliasing]]);;
+*)
+  AC_MSG_RESULT([[no (flags are $XCB_CFLAGS)]])
+  AC_MSG_FAILURE([[No method of suppressing strict-aliasing found]]);;
+[esac]])
 AC_ARG_WITH(serverside-support, AS_HELP_STRING([--with-serverside-support], [Build with support for server-side usage of xcb. This is still EXPERIMENTAL! ABI/API may change! (default: no)]), [XCB_SERVERSIDE_SUPPORT=$withval], [XCB_SERVERSIDE_SUPPORT=no])
 
 AM_CONDITIONAL(XCB_SERVERSIDE_SUPPORT, test "x$XCB_SERVERSIDE_SUPPORT" = "xyes")

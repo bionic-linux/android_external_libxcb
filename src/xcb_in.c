@@ -34,6 +34,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <errno.h>
+#include <limits.h>
 
 #if USE_POLL
 #include <poll.h>
@@ -251,7 +252,7 @@ static int read_packet(xcb_connection_t *c)
 
         /* XXX a bit of a hack -- we "know" that all FD replys place
          * the number of fds in the pad0 byte */
-        if (pend && pend->flags & XCB_REQUEST_REPLY_FDS)
+        if (pend && (pend->flags & XCB_REQUEST_REPLY_FDS))
             nfd = genrep.pad0;
     }
 
@@ -261,7 +262,7 @@ static int read_packet(xcb_connection_t *c)
 
     bufsize = length + eventlength + nfd * sizeof(int)  +
         (genrep.response_type == XCB_REPLY ? 0 : sizeof(uint32_t));
-    if (bufsize < INT32_MAX)
+    if (bufsize < INT32_MAX && length <= INT_MAX && eventlength <= INT_MAX)
         buf = malloc((size_t) bufsize);
     else
         buf = NULL;
@@ -415,6 +416,7 @@ static int poll_for_reply(xcb_connection_t *c, uint64_t request, void **reply, x
 {
     struct reply_list *head;
 
+    *reply = NULL;
     /* If an error occurred when issuing the request, fail immediately. */
     if(!request)
         head = 0;
@@ -446,7 +448,6 @@ static int poll_for_reply(xcb_connection_t *c, uint64_t request, void **reply, x
 
     if(error)
         *error = 0;
-    *reply = 0;
 
     if(head)
     {
@@ -510,6 +511,12 @@ static void *wait_for_reply(xcb_connection_t *c, uint64_t request, xcb_generic_e
 {
     void *ret = 0;
 
+    if (e)
+        *e = NULL;
+
+    if (c->has_error)
+        return NULL;
+
     /* If this request has not been written yet, write it. */
     if(c->out.return_socket || _xcb_out_flush_to(c, request))
     {
@@ -538,16 +545,24 @@ static uint64_t widen(xcb_connection_t *c, unsigned int request)
     return widened_request;
 }
 
+static void *wait_for_reply_safe(xcb_connection_t *c, uint64_t request, xcb_generic_error_t **e, size_t size)
+{
+    xcb_generic_reply_t *ret = NULL;
+    ret = wait_for_reply(c, request, e);
+    if (ret && size > 32 && ret->length < ((size - 29) >> 2))
+    {
+        _xcb_conn_shutdown(c, XCB_CONN_CLOSED_PARSE_ERR);
+        free(ret);
+        ret = NULL;
+    }
+    return ret;
+}
+
 /* Public interface */
 
 void *xcb_wait_for_reply(xcb_connection_t *c, unsigned int request, xcb_generic_error_t **e)
 {
     void *ret;
-    if(e)
-        *e = 0;
-    if(c->has_error)
-        return 0;
-
     pthread_mutex_lock(&c->iolock);
     ret = wait_for_reply(c, widen(c, request), e);
     pthread_mutex_unlock(&c->iolock);
@@ -557,13 +572,26 @@ void *xcb_wait_for_reply(xcb_connection_t *c, unsigned int request, xcb_generic_
 void *xcb_wait_for_reply64(xcb_connection_t *c, uint64_t request, xcb_generic_error_t **e)
 {
     void *ret;
-    if(e)
-        *e = 0;
-    if(c->has_error)
-        return 0;
-
     pthread_mutex_lock(&c->iolock);
     ret = wait_for_reply(c, request, e);
+    pthread_mutex_unlock(&c->iolock);
+    return ret;
+}
+
+void *xcb_wait_for_reply_safe(xcb_connection_t *c, unsigned int request, xcb_generic_error_t **e, size_t size)
+{
+    xcb_generic_reply_t *ret = NULL;
+    pthread_mutex_lock(&c->iolock);
+    ret = wait_for_reply_safe(c, widen(c, request), e, size);
+    pthread_mutex_unlock(&c->iolock);
+    return ret;
+}
+
+void *xcb_wait_for_reply64_safe(xcb_connection_t *c, uint64_t request, xcb_generic_error_t **e, size_t size)
+{
+    xcb_generic_reply_t *ret = NULL;
+    pthread_mutex_lock(&c->iolock);
+    ret = wait_for_reply_safe(c, request, e, size);
     pthread_mutex_unlock(&c->iolock);
     return ret;
 }
@@ -599,6 +627,9 @@ static void discard_reply(xcb_connection_t *c, uint64_t request)
     void *reply;
     pending_reply **prev_pend;
 
+    if (c->has_error)
+	return;
+
     /* Free any replies or errors that we've already read. Stop if
      * xcb_wait_for_reply would block or we've run out of replies. */
     while(poll_for_reply(c, request, &reply, 0) && reply)
@@ -628,9 +659,6 @@ static void discard_reply(xcb_connection_t *c, uint64_t request)
 
 void xcb_discard_reply(xcb_connection_t *c, unsigned int sequence)
 {
-    if(c->has_error)
-        return;
-
     /* If an error occurred when issuing the request, fail immediately. */
     if(!sequence)
         return;
@@ -642,9 +670,6 @@ void xcb_discard_reply(xcb_connection_t *c, unsigned int sequence)
 
 void xcb_discard_reply64(xcb_connection_t *c, uint64_t sequence)
 {
-    if(c->has_error)
-        return;
-
     /* If an error occurred when issuing the request, fail immediately. */
     if(!sequence)
         return;
@@ -654,9 +679,10 @@ void xcb_discard_reply64(xcb_connection_t *c, uint64_t sequence)
     pthread_mutex_unlock(&c->iolock);
 }
 
-int xcb_poll_for_reply(xcb_connection_t *c, unsigned int request, void **reply, xcb_generic_error_t **error)
+static int poll_for_reply_inner(xcb_connection_t *c, uint64_t request, void **reply, xcb_generic_error_t **error)
 {
     int ret;
+    assert(reply != 0);
     if(c->has_error)
     {
         *reply = 0;
@@ -664,11 +690,33 @@ int xcb_poll_for_reply(xcb_connection_t *c, unsigned int request, void **reply, 
             *error = 0;
         return 1; /* would not block */
     }
-    assert(reply != 0);
-    pthread_mutex_lock(&c->iolock);
-    ret = poll_for_reply(c, widen(c, request), reply, error);
+    ret = poll_for_reply(c, request, reply, error);
     if(!ret && c->in.reading == 0 && _xcb_in_read(c)) /* _xcb_in_read shuts down the connection on error */
-        ret = poll_for_reply(c, widen(c, request), reply, error);
+        ret = poll_for_reply(c, request, reply, error);
+    return ret;
+}
+
+static int poll_for_reply_inner_safe(xcb_connection_t *c, uint64_t request, void **reply, xcb_generic_error_t **error, size_t size)
+{
+    int ret = poll_for_reply_inner(c, request, reply, error);
+    if (ret && *reply)
+    {
+        xcb_generic_reply_t *genrep = *reply;
+        if (size > 32 && genrep->length < ((size - 29) >> 2))
+        {
+            _xcb_conn_shutdown(c, XCB_CONN_CLOSED_PARSE_ERR);
+            free(genrep);
+            *reply = NULL;
+        }
+    }
+    return ret;
+}
+
+int xcb_poll_for_reply(xcb_connection_t *c, unsigned int request, void **reply, xcb_generic_error_t **error)
+{
+    int ret;
+    pthread_mutex_lock(&c->iolock);
+    ret = poll_for_reply_inner(c, widen(c, request), reply, error);
     pthread_mutex_unlock(&c->iolock);
     return ret;
 }
@@ -676,34 +724,43 @@ int xcb_poll_for_reply(xcb_connection_t *c, unsigned int request, void **reply, 
 int xcb_poll_for_reply64(xcb_connection_t *c, uint64_t request, void **reply, xcb_generic_error_t **error)
 {
     int ret;
-    if(c->has_error)
-    {
-        *reply = 0;
-        if(error)
-            *error = 0;
-        return 1; /* would not block */
-    }
-    assert(reply != 0);
     pthread_mutex_lock(&c->iolock);
-    ret = poll_for_reply(c, request, reply, error);
-    if(!ret && c->in.reading == 0 && _xcb_in_read(c)) /* _xcb_in_read shuts down the connection on error */
-        ret = poll_for_reply(c, request, reply, error);
+    ret = poll_for_reply_inner(c, request, reply, error);
+    pthread_mutex_unlock(&c->iolock);
+    return ret;
+}
+
+int xcb_poll_for_reply_safe(xcb_connection_t *c, unsigned int request, void **reply, xcb_generic_error_t **error, size_t size)
+{
+    int ret;
+    pthread_mutex_lock(&c->iolock);
+    ret = poll_for_reply_inner_safe(c, widen(c, request), reply, error, size);
+    pthread_mutex_unlock(&c->iolock);
+    return ret;
+}
+
+int xcb_poll_for_reply64_safe(xcb_connection_t *c, uint64_t request, void **reply, xcb_generic_error_t **error, size_t size)
+{
+    int ret;
+    pthread_mutex_lock(&c->iolock);
+    ret = poll_for_reply_inner_safe(c, request, reply, error, size);
     pthread_mutex_unlock(&c->iolock);
     return ret;
 }
 
 xcb_generic_event_t *xcb_wait_for_event(xcb_connection_t *c)
 {
-    xcb_generic_event_t *ret;
-    if(c->has_error)
-        return 0;
+    xcb_generic_event_t *ret = NULL;
     pthread_mutex_lock(&c->iolock);
-    /* get_event returns 0 on empty list. */
-    while(!(ret = get_event(c)))
-        if(!_xcb_conn_wait(c, &c->in.event_cond, 0, 0))
-            break;
+    if(!c->has_error)
+    {
+        /* get_event returns 0 on empty list. */
+        while(!(ret = get_event(c)))
+            if(!_xcb_conn_wait(c, &c->in.event_cond, 0, 0))
+                break;
 
-    _xcb_in_wake_up_next_reader(c);
+        _xcb_in_wake_up_next_reader(c);
+    }
     pthread_mutex_unlock(&c->iolock);
     return ret;
 }
@@ -711,15 +768,15 @@ xcb_generic_event_t *xcb_wait_for_event(xcb_connection_t *c)
 static xcb_generic_event_t *poll_for_next_event(xcb_connection_t *c, int queued)
 {
     xcb_generic_event_t *ret = 0;
+    pthread_mutex_lock(&c->iolock);
     if(!c->has_error)
     {
-        pthread_mutex_lock(&c->iolock);
         /* FIXME: follow X meets Z architecture changes. */
         ret = get_event(c);
         if(!ret && !queued && c->in.reading == 0 && _xcb_in_read(c)) /* _xcb_in_read shuts down the connection on error */
             ret = get_event(c);
-        pthread_mutex_unlock(&c->iolock);
     }
+    pthread_mutex_unlock(&c->iolock);
     return ret;
 }
 
@@ -738,9 +795,11 @@ xcb_generic_error_t *xcb_request_check(xcb_connection_t *c, xcb_void_cookie_t co
     uint64_t request;
     xcb_generic_error_t *ret = 0;
     void *reply;
-    if(c->has_error)
-        return 0;
     pthread_mutex_lock(&c->iolock);
+    if(c->has_error) {
+        pthread_mutex_unlock(&c->iolock);
+        return 0;
+    }
     request = widen(c, cookie.sequence);
     if (XCB_SEQUENCE_COMPARE(request, >, c->in.request_completed))
     {
@@ -779,9 +838,11 @@ xcb_generic_event_t *xcb_poll_for_special_event(xcb_connection_t *c,
 {
     xcb_generic_event_t *event;
 
-    if(c->has_error)
-        return 0;
     pthread_mutex_lock(&c->iolock);
+    if(c->has_error) {
+        pthread_mutex_unlock(&c->iolock);
+        return 0;
+    }
     event = get_special_event(c, se);
     if(!event && c->in.reading == 0 && _xcb_in_read(c)) /* _xcb_in_read shuts down the connection on error */
         event = get_special_event(c, se);
@@ -795,9 +856,11 @@ xcb_generic_event_t *xcb_wait_for_special_event(xcb_connection_t *c,
     special_list special;
     xcb_generic_event_t *event;
 
-    if(c->has_error)
-        return 0;
     pthread_mutex_lock(&c->iolock);
+    if(c->has_error) {
+        pthread_mutex_unlock(&c->iolock);
+        return 0;
+    }
 
     insert_special(&c->in.special_waiters, &special, se);
 
@@ -822,12 +885,14 @@ xcb_register_for_special_xge(xcb_connection_t *c,
     xcb_special_event_t *se;
     const xcb_query_extension_reply_t   *ext_reply;
 
-    if(c->has_error)
-        return NULL;
     ext_reply = xcb_get_extension_data(c, ext);
     if (!ext_reply)
         return NULL;
     pthread_mutex_lock(&c->iolock);
+    if (c->has_error) {
+        pthread_mutex_unlock(&c->iolock);
+        return NULL;
+    }
     for (se = c->in.special_events; se; se = se->next) {
         if (se->extension == ext_reply->major_opcode &&
             se->eid == eid) {
@@ -866,10 +931,11 @@ xcb_unregister_for_special_event(xcb_connection_t *c,
     if (!se)
         return;
 
-    if (c->has_error)
-        return;
-
     pthread_mutex_lock(&c->iolock);
+    if (c->has_error) {
+        pthread_mutex_unlock(&c->iolock);
+        return NULL;
+    }
 
     for (prev = &c->in.special_events; (s = *prev) != NULL; prev = &(s->next)) {
         if (s == se) {

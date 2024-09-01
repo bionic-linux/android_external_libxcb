@@ -8,4 +8,4 @@ Description: XCB XTEST Extension
 Version: @PACKAGE_VERSION@
 Requires.private: xcb
 Libs: -L${libdir} -lxcb-xtest
-Cflags: -I${includedir}
+Cflags: -I${includedir} @XCB_CFLAGS@

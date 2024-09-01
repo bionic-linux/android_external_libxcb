@@ -8,4 +8,4 @@ Description: XCB GenericEvent Extension
 Version: @PACKAGE_VERSION@
 Requires.private: xcb
 Libs: -L${libdir} -lxcb-ge
-Cflags: -I${includedir}
+Cflags: -I${includedir} @XCB_CFLAGS@

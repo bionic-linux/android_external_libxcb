@@ -8,4 +8,4 @@ Description: XCB Damage Extension
 Version: @PACKAGE_VERSION@
 Requires.private: xcb xcb-xfixes
 Libs: -L${libdir} -lxcb-damage
-Cflags: -I${includedir}
+Cflags: -I${includedir} @XCB_CFLAGS@

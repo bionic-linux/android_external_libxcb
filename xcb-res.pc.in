@@ -8,4 +8,4 @@ Description: XCB X-Resource Extension
 Version: @PACKAGE_VERSION@
 Requires.private: xcb
 Libs: -L${libdir} -lxcb-res
-Cflags: -I${includedir}
+Cflags: -I${includedir} @XCB_CFLAGS@

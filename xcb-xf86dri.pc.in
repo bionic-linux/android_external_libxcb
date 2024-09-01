@@ -8,4 +8,4 @@ Description: XCB XFree86-DRI Extension
 Version: @PACKAGE_VERSION@
 Requires.private: xcb
 Libs: -L${libdir} -lxcb-xf86dri
-Cflags: -I${includedir}
+Cflags: -I${includedir} @XCB_CFLAGS@
