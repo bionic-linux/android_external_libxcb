@@ -337,6 +337,12 @@ xcb_generic_event_t *xcb_poll_for_special_event(xcb_connection_t *c,
                                                 xcb_special_event_t *se);
 
 /**
+ * @brief Returns the next queued event from a special queue
+ */
+xcb_generic_event_t *xcb_poll_for_queued_special_event(xcb_connection_t *c,
+                                                       xcb_special_event_t *se);
+
+/**
  * @brief Returns the next event from a special queue, blocking until one arrives
  */
 xcb_generic_event_t *xcb_wait_for_special_event(xcb_connection_t *c,

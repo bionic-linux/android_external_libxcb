@@ -411,7 +411,7 @@ static int read_block(const int fd, void *buf, const intptr_t len)
     return len;
 }
 
-static int poll_for_reply(xcb_connection_t *c, uint64_t request, void **reply, xcb_generic_error_t **error)
+static int get_reply(xcb_connection_t *c, uint64_t request, void **reply, xcb_generic_error_t **error)
 {
     struct reply_list *head;
 
@@ -518,7 +518,7 @@ static void *wait_for_reply(xcb_connection_t *c, uint64_t request, xcb_generic_e
 
         insert_reader(&c->in.readers, &reader, request, &cond);
 
-        while(!poll_for_reply(c, request, &ret, e))
+        while(!get_reply(c, request, &ret, e))
             if(!_xcb_conn_wait(c, &cond, 0, 0))
                 break;
 
@@ -601,7 +601,7 @@ static void discard_reply(xcb_connection_t *c, uint64_t request)
 
     /* Free any replies or errors that we've already read. Stop if
      * xcb_wait_for_reply would block or we've run out of replies. */
-    while(poll_for_reply(c, request, &reply, 0) && reply)
+    while(get_reply(c, request, &reply, 0) && reply)
         free(reply);
 
     /* If we've proven there are no more responses coming, we're done. */
@@ -654,7 +654,8 @@ void xcb_discard_reply64(xcb_connection_t *c, uint64_t sequence)
     pthread_mutex_unlock(&c->iolock);
 }
 
-int xcb_poll_for_reply(xcb_connection_t *c, unsigned int request, void **reply, xcb_generic_error_t **error)
+static int poll_for_reply(xcb_connection_t *c, unsigned int request,
+                          void **reply, xcb_generic_error_t **error, int queued)
 {
     int ret;
     if(c->has_error)
@@ -666,11 +667,23 @@ int xcb_poll_for_reply(xcb_connection_t *c, unsigned int request, void **reply, 
     }
     assert(reply != 0);
     pthread_mutex_lock(&c->iolock);
-    ret = poll_for_reply(c, widen(c, request), reply, error);
-    if(!ret && c->in.reading == 0 && _xcb_in_read(c)) /* _xcb_in_read shuts down the connection on error */
-        ret = poll_for_reply(c, widen(c, request), reply, error);
+    ret = get_reply(c, widen(c, request), reply, error);
+    if(!ret && !queued && c->in.reading == 0 && _xcb_in_read(c)) /* _xcb_in_read shuts down the connection on error */
+        ret = get_reply(c, widen(c, request), reply, error);
     pthread_mutex_unlock(&c->iolock);
     return ret;
+}
+
+int xcb_poll_for_reply(xcb_connection_t *c, unsigned int request, void **reply,
+                       xcb_generic_error_t **error)
+{
+    return poll_for_reply(c, request, reply, error, 0);
+}
+
+int xcb_poll_for_queued_reply(xcb_connection_t *c, unsigned int request, void **reply,
+                              xcb_generic_error_t **error)
+{
+    return poll_for_reply(c, request, reply, error, 1);
 }
 
 int xcb_poll_for_reply64(xcb_connection_t *c, uint64_t request, void **reply, xcb_generic_error_t **error)
@@ -685,9 +698,9 @@ int xcb_poll_for_reply64(xcb_connection_t *c, uint64_t request, void **reply, xc
     }
     assert(reply != 0);
     pthread_mutex_lock(&c->iolock);
-    ret = poll_for_reply(c, request, reply, error);
+    ret = get_reply(c, request, reply, error);
     if(!ret && c->in.reading == 0 && _xcb_in_read(c)) /* _xcb_in_read shuts down the connection on error */
-        ret = poll_for_reply(c, request, reply, error);
+        ret = get_reply(c, request, reply, error);
     pthread_mutex_unlock(&c->iolock);
     return ret;
 }
@@ -774,8 +787,9 @@ static xcb_generic_event_t *get_special_event(xcb_connection_t *c,
     return event;
 }
 
-xcb_generic_event_t *xcb_poll_for_special_event(xcb_connection_t *c,
-                                                xcb_special_event_t *se)
+static xcb_generic_event_t *poll_for_special_event(xcb_connection_t *c,
+                                                   xcb_special_event_t *se,
+                                                   int queued)
 {
     xcb_generic_event_t *event;
 
@@ -783,10 +797,22 @@ xcb_generic_event_t *xcb_poll_for_special_event(xcb_connection_t *c,
         return 0;
     pthread_mutex_lock(&c->iolock);
     event = get_special_event(c, se);
-    if(!event && c->in.reading == 0 && _xcb_in_read(c)) /* _xcb_in_read shuts down the connection on error */
+    if(!event && !queued && c->in.reading == 0 && _xcb_in_read(c)) /* _xcb_in_read shuts down the connection on error */
         event = get_special_event(c, se);
     pthread_mutex_unlock(&c->iolock);
     return event;
+}
+
+xcb_generic_event_t *xcb_poll_for_special_event(xcb_connection_t *c,
+                                                xcb_special_event_t *se)
+{
+    return poll_for_special_event(c, se, 0);
+}
+
+xcb_generic_event_t *xcb_poll_for_queued_special_event(xcb_connection_t *c,
+                                                       xcb_special_event_t *se)
+{
+    return poll_for_special_event(c, se, 1);
 }
 
 xcb_generic_event_t *xcb_wait_for_special_event(xcb_connection_t *c,
