@@ -1,0 +1,46 @@
+
+cc_library {
+    name: "libxcb",
+    cflags: [
+        "-DHASXDMAUTH",
+        "-DHAVE_SENDMSG",
+        "-DHAVE_ABSTRACT_SOCKETS",
+        "-DHAVE_GETADDRINFO",
+        "-DUSE_POLL",
+        "-DXCB_QUEUE_BUFFER_SIZE=16384",
+
+        "-Wno-unused-parameter",
+    ],
+    srcs: [
+        "src/xcb_conn.c",
+        "src/xcb_out.c",
+        "src/xcb_in.c",
+        "src/xcb_ext.c",
+        "src/xcb_xid.c",
+        "src/xcb_list.c",
+        "src/xcb_util.c",
+        "src/xcb_auth.c",
+    ],
+    shared_libs: [
+        "libXau",
+        "libXdmcp"
+    ],
+    generated_sources: [
+        "libxcb_xproto_source",
+        "libxcb_bigreq_source",
+        "libxcb_xc_misc_source",
+    ],
+    generated_headers: [
+        "libxcb_xproto_header",
+        "libxcb_bigreq_header",
+        "libxcb_xc_misc_header",
+    ],
+    export_include_dirs: ["src"]
+}
+
+python_binary_host {
+    name: "libxcb_c_client",
+    srcs: ["src/c_client.py"],
+    main: "src/c_client.py",
+    libs: ["xcbgen"],
+}
