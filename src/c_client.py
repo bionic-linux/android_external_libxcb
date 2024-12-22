@@ -3209,7 +3209,7 @@ def c_request(self, name):
                     _c_accessors_field(self, field)
     # We generate the manpage afterwards because _c_type_setup has been called.
     # TODO: what about aux helpers?
-    _man_request(self, name, void=not self.reply, aux=False)
+    #_man_request(self, name, void=not self.reply, aux=False)
 
 
 def c_eventstruct(self, name):
@@ -3300,7 +3300,7 @@ def c_event(self, name):
             _h_setlevel(0)
             _c_setlevel(0)
 
-    _man_event(self, name)
+    # #_man_event(self, name)
 
 def c_error(self, name):
     '''
